@@ -3,6 +3,30 @@
 Berisi catatan perubahan **kode & konfigurasi**, ditulis manual.
 Bukan log runtime eksekusi pipeline (yang ada di folder `log/`).
 
+|fix| File : src/shared/live_view.py [01/10/2026 16:05:00]
+         _render() dibatasi tinggi terminal: tinggi tabel diukur nyata dengan render_lines(), prefix script terpanjang dicari lewat pencarian biner (_atur()), pesan dipotong dari yang terbaru dan setinggi-tingginya diukur satu per satu (_potong_pesan()), tinggi tabel dicache per (lebar, pakai_garis, jumlah baris) di _tinggi_tabel(); _render(penuh=True) dipakai berhenti() supaya frame akhir ke layar utama tidak terpangkas; overflow="ellipsis" pada kolom Script; tinggi < 2 baris -> "terminal terlalu kecil"; baris penanda _penanda_panjang/_penanda_ringkas dipilih lewat _pilih_penanda(); fungsi _jumlah_baris() dihapus karena menghitung baris dengan asumsi "satu script satu baris" dan kelewatan saat teks membungkus
+         Alasan : Memperkecil terminal membuat frame lebih tinggi dari terminal, sehingga terminal menggulir dan judul kolom terpotong ke luar layar (baris script terlihat, judulnya hilang). Judul kolom tidak boleh hilang, jadi yang dipangkas adalah isi; baris penanda membuat pemangkasan selalu terlihat oleh pengguna
+
+|update| File : src/shared/live_view.py [01/10/2026 15:20:00]
+         Tampilan live dikembalikan sebagai header tabel 3 kolom (nama script, status menunggu/jalan/selesai/error, jumlah peringatan+error) yang diperbarui realtime di alternate screen, dengan blok pesan WARNING+/error di bawahnya; redraw stateless memakai Control.home()+Control.clear() tiap frame dan TampilanPipeline tak lagi memakai rich.live sama sekali; STATUS_JALAN diubah dari "dijalankan" menjadi "jalan"; tambahan field RencanaBaris.n_warning/.n_error/.n_masalah, _hitung(), _render(), _tabel(), _sel_status(), _sel_masalah(), _simbol_status(), _normalisasi_status(), dukung_layar(), TampilanLogHandler, pasang_tampilan_log(); saat berhenti() seluruh pesan dicetak ke layar utama; mode cetak lama dipertahankan sebagai HOTEL_LIVE=print
+         Alasan : Versi in-place sebelumnya (01/10 11:30) dibongkar karena rich.live menggeser kursor naik sebesar tinggi frame sebelumnya (LiveRender.position_cursor) sehingga frame lama tertinggal sebagai duplikat di terminal VSCode; menggambar ulang stateless dari home+clear menghapus ketergantungan pada tinggi frame itu, jadi resize aman. Permintaan: status "jalan" yang menandai script sedang berjalan + jumlah warning/error per script
+
+|add| File : src/shared/logging_utils.py [01/10/2026 15:20:00]
+         Fungsi sumber_dari_logger(nama) -> (stage, sumber) | None; _record_target() kini memakainya sehingga pemetaan nama logger ke stage+sumber hanya ada di satu tempat
+         Alasan : live_view butuh memetakan logger (src.extract.bps_scraper) ke baris tabel (bps, extract) untuk menghitung peringatan/error per script tanpa menduplikasi regex yang sama
+
+|fix| File : main.py [01/10/2026 15:20:00]
+         Jalur serial (_run_sources) memanggil pasang_tampilan_log(tampilan) sehingga record WARNING+ dialihkan ke TampilanPipeline.pesan() alih-alih ditulis StreamHandler ke stdout; impor TampilanPipeline/dukung_live/pasang_tampilan_log disesuaikan
+         Alasan : Di mode live, StreamHandler bawaan setup_logging() menulis langsung ke stdout dan menimpa frame alternate screen; jalur paralel sudah aman karena AntreanLogHandler, jalur serial belum
+
+|update| File : PANDUAN.md [01/10/2026 16:05:00]
+         Bagian "Tampilan Terminal" ditambah sub-bagian "Menyesuaikan ukuran terminal": tabel apa yang dipangkas saat ruang kurang (script dari atas urut tetap, pesan terbaru dulu, garis pemisah dilepas), contoh baris penanda bentuk panjang dan ringkas, serta perilaku terminal 1 baris
+         Alasan : Pengguna perlu tahu bahwa memperkecil terminal memangkas isi, bukan merusak tampilan, dan tidak perlu panik saat judul kolom sempat hilang
+
+|update| File : PANDUAN.md [01/10/2026 15:20:00]
+         Bagian "Tampilan Terminal" ditulis ulang: header tabel 3 kolom dengan status & jumlah peringatan/error, blok pesan di bawahnya, penjelasan kenapa redraw stateless (bukan rich.live), perilaku saat pesan menumpuk, tabel env HOTEL_LIVE=0/print, dan catatan alternate screen saat program dibunuh paksa
+         Alasan : Dokumentasi mengikuti perilaku tampilan live terbaru
+
 |fix| File : src/shared/live_view.py [01/10/2026 11:30:27]
          Tampilan live in-place dibongkar total: rich.live (Live), Group, RenderableType, cell_len, _tinggi, _kunci_ukuran(), _tinggi_region(), _render(), _pilih_tampil(), _pilih_baris(), _baris_file(), _baris_pesan(), _alihkan_log_konsol(), _pulihkan_log_konsol(), _urutan_selesai, kolom jumlah peringatan, serta field RencanaBaris.waktu_jalan/.n_warning semuanya dihapus; main.py dan src/parallel.py tidak berubah karena API publik (dukung_live, RencanaBaris, mulai, muat, pesan, berhenti) tetap sama
          Alasan : Redraw in-place di terminal VSCode menyisakan baris frame lama sebagai duplikat meski tinggi sudah dikunci dan re-anchor sudah dipasang - kursor tetap digeser naik oleh LiveRender.position_cursor sebanyak tinggi frame sebelumnya yang tidak lagi valid. Sekarang blok rencana dicetak sekali di awal tanpa penulisan ulang baris, tiap script yang selesai menambah satu baris ke bawah, dan resize terminal tidak bisa merusak apa pun

@@ -16,7 +16,12 @@ from src.pipeline import (
 from src.shared.db import ensure_schema
 from src.shared.config import get_db_config, get_source_config
 from src.shared.dataset_filter import get_dataset_filter, set_dataset_filter
-from src.shared.live_view import RencanaBaris, TampilanPipeline, dukung_live
+from src.shared.live_view import (
+    RencanaBaris,
+    TampilanPipeline,
+    dukung_live,
+    pasang_tampilan_log,
+)
 from src.shared.logging_utils import setup_logging
 from src.shared.row_limit import get_row_limit, set_row_limit
 
@@ -304,6 +309,9 @@ def _run_sources(
     if limit is not None:
         catatan_uji = f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)"
     if tampilan is not None:
+        # Jalur serial tidak punya antrian antar-proses seperti worker paralel,
+        # jadi record WARNING+ harus dialihkan ke tampilan agar tidak menimpa frame.
+        pasang_tampilan_log(tampilan)
         if catatan_uji:
             echo(catatan_uji)
         tampilan.mulai()

@@ -55,35 +55,78 @@ Menjalankan dengan `[N]` (mis. `python main.py [5]` atau `"(cuaca[5])"`) adalah
 ## Tampilan Terminal
 
 Saat menjalankan beberapa tahap sekaligus (`python main.py`, `python main.py [10]`,
-atau `python main.py bps`), terminal menampilkan **blok rencana** yang dicetak
-**satu kali** di awal: kelompok `EXTRACT`/`TRANSFORM`/`LOAD` dengan satu baris per
-script, semuanya berstatus `menunggu`:
+atau `python main.py bps`), terminal menampilkan **header tabel 3 kolom** yang
+statusnya berubah di tempat:
 
 ```
- EXTRACT
-· src/extract/bps_scraper.py  menunggu
-· src/extract/kurs_scraper.py  menunggu
+ Script                        Status      Peringatan/Error
+ ──────────────────────────────────────────────────────────
+ src/extract/bps_scraper.py    ✔ selesai              0
+ src/extract/kurs_scraper.py   ▶ jalan              2W 1E
+ src/extract/gdelt_scraper.py  · menunggu              0
 ```
 
-Sudah tidak ada lagi redraw in-place. Sesudah blok itu, setiap script yang
-selesai atau gagal menambah **satu baris baru** di bawahnya, dan setiap pesan
-peringatan langsung tercetak seperti log biasa:
+Kolom pertama menampilkan path modul, kolom kedua menunjukkan status
+`menunggu` → `jalan` → `selesai` atau `error`, dan kolom ketiga menampilkan
+jumlah peringatan (W) dan error (E) selama script itu berjalan — `0` bila
+script berjalan bersih. Di bawah header ada blok pesan yang isinya **hanya**
+peringatan dan error:
 
 ```
-✔ src/extract/bps_scraper.py  selesai — 9 dataset 1.204 baris (2.4 dtk)
-⚠ 11:30:23 WARNING  src.extract.kurs_scraper kurs request error untuk 2016-04-04 ...
-✖ src/extract/gdelt_scraper.py  error — HTTPError: 500 (12.1 dtk)
+ ⚠ 15:10:38 WARNING  src.extract.kurs_scraper kurs request error untuk 2016-04-04
+ ⚠ 15:10:38 ERROR    src.extract.gdelt_scraper HTTPError: 500
 ```
 
-Karena tidak ada baris yang ditulis ulang, mengubah ukuran terminal kapan pun
-tidak merusak tampilan dan tidak pernah menyisakan duplikat. Warna: hijau =
-selesai, merah = gagal, kuning = peringatan. Status yang dipakai: `menunggu`,
-`dijalankan`, `selesai`, `error`.
+Header memakai **alternate screen**: tiap pembaruan menggambar ulang seluruh layar
+dari atas (`home` + `clear`), sehingga tidak bergantung pada tinggi frame
+sebelumnya. Ini disengaja — `rich.live.Live` menggeser kursor naik sebesar tinggi
+frame sebelumnya, dan begitu terminal di-resize angka itu tidak lagi valid sehingga
+frame lama tertinggal sebagai baris duplikat (kejadian nyata di terminal VSCode).
+Akibatnya **mengubah ukuran terminal kapan pun aman**: memperkecil terminal hanya
+memotong tampilan, memperbesar memulihkannya, dan tidak pernah menyisakan baris
+ganda karena frame selalu digambar dari nol.
 
-Blok rencana ini memakai `rich` untuk pewarnaan dan membutuhkan output berupa
-terminal sungguhan. Di terminal lain — atau saat output di-pipe/di-redirect ke
-file — otomatis kembali ke cetak ringkas per baris. Matikan paksa dengan env
-`HOTEL_LIVE=0`.
+### Menyesuaikan ukuran terminal
+
+Frame tidak pernah lebih tinggi dari terminal. Saat ruang tidak cukup, yang dipangkas
+adalah isi — bukan judul kolom:
+
+| Ruang kurang | Yang dikurangi |
+| --- | --- |
+|(script tidak muat seluruhnya) | baris script dari **atas**, urut tetap |
+| pesan tidak muat seluruhnya | pesan **terbaru** dulu |
+| terminal sangat sempit | garis pemisah `────` dilepas, penanda dipersingkat |
+
+Baris penanda memberitahu apa yang disembunyikan, dan tidak pernah hilang diam-diam:
+
+```
+ … 6 script · 12 pesan belum tampil (detail di log/)
+ … 6 skrip · 12 pesan                      ← terminal sempit, bentuk ringkas
+```
+
+Jadi kalau header terasa terpotong setelah terminal dikecilkan, **lebarkan lagi** —
+bukan berarti ada yang rusak. Semua pesan tetap utuh di `log/`, dan saat program
+selesai tabel final beserta **seluruh** pesan dicetak ke layar utama. Kalau pesan
+menumpuk melebihi tinggi terminal, pesan terbaru yang terlihat. Terminal 1 baris
+ditampilkan sebagai `terminal terlalu kecil`.
+
+Menjalankan seluruh pipeline (3 tahap) menampilkan tiga kelompok baris
+(`EXTRACT`/`TRANSFORM`/`LOAD`); menjalankan `--bronze` hanya menampilkan 10 baris
+`EXTRACT`.
+
+Warna: hijau = selesai, merah = error, kuning = sedang berjalan, redup = menunggu.
+Tampilan ini memakai `rich` dan membutuhkan output berupa terminal sungguhan. Di
+terminal lain — atau saat output di-pipe/di-redirect ke file — otomatis kembali ke
+cetak ringkas per baris. Kendali lewat env:
+
+| Env | Efek |
+| --- | --- |
+| `HOTEL_LIVE=0` | Matikan tampilan live, pakai cetak ringkas |
+| `HOTEL_LIVE=print` | Pakai mode cetak, tanpa alternate screen: rencana dicetak sekali lalu tiap script yang selesai menambah satu baris |
+
+> Alternate screen dibiarkan aktif bila program dibunuh paksa (`kill -9`,
+> `taskkill`), sehingga terminal tampak kosong sampai Anda tekan Enter atau
+> `/reset`. `HOTEL_LIVE=print` menghindari hal ini.
 
 ## Perintah `run` (typer) — Opsi Lengkap
 

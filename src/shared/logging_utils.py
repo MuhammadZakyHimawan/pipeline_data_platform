@@ -28,6 +28,25 @@ _NOISY_LOGGERS = ("urllib3", "requests", "http.client", "asyncio", "playwright",
 _CONFIGURED = False
 
 
+def sumber_dari_logger(name: str) -> tuple[str, str] | None:
+    """Petakan nama logger modul pipeline ke (stage, sumber); None bila bukan.
+
+    - src.extract.bps_scraper             -> ('extract', 'bps')
+    - src.transform.hari_libur_transform -> ('transform', 'hari_libur')
+    - src.load.gmaps_load                 -> ('load', 'gmaps')
+    - src.shared.storage / root / ''      -> None (bukan script pipeline)
+
+    Dipakai dua tempat: `_record_target` untuk menentukan file log, dan
+    `src/shared/live_view.py` untuk menempelkan jumlah peringatan/error ke
+    baris script yang benar.
+    """
+    m = _STAGE_RE.match(name or "")
+    if not m:
+        return None
+    stage, modul = m.group(1), m.group(2)
+    return stage, (_SUFFIX_RE.sub("", modul) or modul)
+
+
 def _record_target(name: str, log_dir: Path) -> Path:
     """Tentukan file log target dari nama logger.
 
@@ -36,10 +55,9 @@ def _record_target(name: str, log_dir: Path) -> Path:
     - src.load.gmaps_load              -> <log_dir>/load/gmaps.log
     - selain itu (root, src.shared.*)  -> <log_dir>/pipeline.log
     """
-    m = _STAGE_RE.match(name or "")
-    if m:
-        stage, modul = m.group(1), m.group(2)
-        sumber = _SUFFIX_RE.sub("", modul) or modul
+    kunci = sumber_dari_logger(name)
+    if kunci:
+        stage, sumber = kunci
         return log_dir / stage / f"{sumber}.log"
     return log_dir / "pipeline.log"
 
