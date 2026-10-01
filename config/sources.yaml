@@ -1,0 +1,252 @@
+# Definisi sumber data pipeline.
+# Periode default: "latest" = periode terbaru; backfill menyusul terpisah.
+#
+# Grain penamaan file bronze/silver (lihat src/shared/config.py):
+#   year     -> satu file per tahun: {dataset}/{YYYY}.parquet
+#   snapshot -> satu file penuh tanpa waktu: {dataset}/data.parquet
+# Setiap file hanya berisi 1 tahun (atau 1 snapshot), jadi tidak ada tahun
+# yang bisa muncul di dua file sekaligus.
+
+defaults:
+  period: latest
+  timezone: Asia/Jakarta
+  # Browser untuk sumber yang butuh Playwright. Pipeline umumnya headless,
+  # tapi bisa di-override per sumber (misal saat butuh observasi/bypass captcha).
+  headless: true
+  # Gedung pencarian Moovit Jakarta (ganti bila perlu)
+  moovit_url: "https://moovitapp.com/tripplan/jakarta-2044/lines/id?ref=16&customerId=4908"
+
+sources:
+  bps:
+    enabled: true
+    period: latest
+    grain: year
+    # start_year per dataset: tahun pertama yang ditarik; tahun tanpa data
+    # dilewati (tidak ada file yang dibuat untuk tahun kosong).
+    datasets:
+      asal_turis:
+        domain: "0000"
+        var: "1470"
+        start_year: 2014
+      inflasi:
+        domain: "0000"
+        var: "1"
+        start_year: 2014
+      lama_menginap:
+        domain: "3100"
+        var: "233"
+        start_year: 2014
+      tpk_bintang:
+        domain: "3100"
+        var: "1186"
+        start_year: 2014
+      wisman_pintu_masuk:
+        domain: "3100"
+        var: "238"
+        start_year: 2014
+      wisnus_tujuan:
+        domain: "3100"
+        var: "1330"
+        start_year: 2014
+
+  gdelt:
+    enabled: true
+    period: latest
+    grain: year
+    # GDELT DOC API hanya mencakup ~2018 ke belakang.
+    start_year: 2018
+
+  cuaca:
+    enabled: true
+    period: latest
+    grain: year
+
+  trends:
+    enabled: true
+    period: latest
+    grain: year
+    playwright_required: true
+    geo: ID
+    # Optional: override rentang Trends (format "YYYY-MM-DD YYYY-MM-DD").
+    # Default jika dikosongkan = 10 tahun terakhir s.d. hari ini.
+    range: ""
+    jeda_antar_destinasi: 20
+    daftar_destinasi:
+      - nama: "Bali"
+        kategori: "Destinasi"
+      - nama: "Lombok"
+        kategori: "Destinasi"
+      - nama: "Gili Trawangan"
+        kategori: "Destinasi"
+      - nama: "Yogyakarta"
+        kategori: "Destinasi"
+      - nama: "Borobudur"
+        kategori: "Destinasi"
+      - nama: "Prambanan"
+        kategori: "Destinasi"
+      - nama: "Bandung"
+        kategori: "Destinasi"
+      - nama: "Lembang"
+        kategori: "Destinasi"
+      - nama: "Pangandaran"
+        kategori: "Destinasi"
+      - nama: "Kota Tua Jakarta"
+        kategori: "Destinasi"
+      - nama: "Kepulauan Seribu"
+        kategori: "Destinasi"
+      - nama: "Ancol"
+        kategori: "Destinasi"
+      - nama: "Bogor"
+        kategori: "Destinasi"
+      - nama: "Puncak"
+        kategori: "Destinasi"
+      - nama: "Batu Malang"
+        kategori: "Destinasi"
+      - nama: "Bromo"
+        kategori: "Destinasi"
+      - nama: "Kawah Ijen"
+        kategori: "Destinasi"
+      - nama: "Semarang"
+        kategori: "Destinasi"
+      - nama: "Solo"
+        kategori: "Destinasi"
+      - nama: "Medan"
+        kategori: "Destinasi"
+      - nama: "Danau Toba"
+        kategori: "Destinasi"
+      - nama: "Bukittinggi"
+        kategori: "Destinasi"
+      - nama: "Palembang"
+        kategori: "Destinasi"
+      - nama: "Balikpapan"
+        kategori: "Destinasi"
+      - nama: "Makassar"
+        kategori: "Destinasi"
+      - nama: "Toraja"
+        kategori: "Destinasi"
+      - nama: "Manado"
+        kategori: "Destinasi"
+      - nama: "Bunaken"
+        kategori: "Destinasi"
+      - nama: "Wakatobi"
+        kategori: "Destinasi"
+      - nama: "Labuan Bajo"
+        kategori: "Destinasi"
+      - nama: "Komodo"
+        kategori: "Destinasi"
+      - nama: "Raja Ampat"
+        kategori: "Destinasi"
+
+  gmaps:
+    enabled: true
+    period: latest
+    grain: snapshot
+    playwright_required: true
+    # Tanggal check-in yang diambil tiap hotel (H+1..H+7, H+30, H+60).
+    lead_times: [1, 2, 3, 4, 5, 6, 7, 30, 60]
+    max_reviews_per_hotel: 200
+    # Daftar hotel UTAMA dibaca dari DB: gold.gmaps_hotel_master.
+    # Tambah/hapus hotel di tabel itu, bukan di file ini.
+    # Daftar di bawah hanya CADANGAN, dipakai bila tabel DB kosong/tidak terbaca.
+    daftar_hotel:
+      - id_kompetitor: "hotel-kempinski"
+        nama_hotel: "Hotel Indonesia Kempinski"
+        alamat: "Jl. M.H. Thamrin No.1"
+        kota: "Jakarta"
+        latitude: -6.1942
+        longitude: 106.8224
+      - id_kompetitor: "hotel-grand-hyatt"
+        nama_hotel: "Grand Hyatt Jakarta"
+        alamat: "Jl. M.H. Thamrin Kav 28-30"
+        kota: "Jakarta"
+        latitude: -6.1952
+        longitude: 106.8237
+      - id_kompetitor: "hotel-mandarin"
+        nama_hotel: "Mandarin Oriental Jakarta"
+        alamat: "Jl. M.H. Thamrin No.1"
+        kota: "Jakarta"
+        latitude: -6.1937
+        longitude: 106.8175
+      - id_kompetitor: "hotel-ritz-pacific"
+        nama_hotel: "The Ritz-Carlton Jakarta Pacific Place"
+        alamat: "Jl. Jend. Sudirman Kav 52-53"
+        kota: "Jakarta"
+        latitude: -6.2250
+        longitude: 106.8068
+      - id_kompetitor: "hotel-ritz-mega-kuningan"
+        nama_hotel: "The Ritz-Carlton Jakarta Mega Kuningan"
+        alamat: "Jl. DR. Ide Anak Agung Gde Agung Kav E.1.1"
+        kota: "Jakarta"
+        latitude: -6.2250
+        longitude: 106.8220
+      - id_kompetitor: "hotel-fairmont"
+        nama_hotel: "Fairmont Jakarta"
+        alamat: "Jl. Asia Afrika No.8"
+        kota: "Jakarta"
+        latitude: -6.2250
+        longitude: 106.8000
+      - id_kompetitor: "hotel-westin"
+        nama_hotel: "The Westin Jakarta"
+        alamat: "Jl. H.R. Rasuna Said Kav 9-10"
+        kota: "Jakarta"
+        latitude: -6.2300
+        longitude: 106.8300
+      - id_kompetitor: "hotel-pullman-central-park"
+        nama_hotel: "Pullman Jakarta Central Park"
+        alamat: "Jl. Letjen S. Parman Kav 28"
+        kota: "Jakarta"
+        latitude: -6.1700
+        longitude: 106.7870
+      - id_kompetitor: "hotel-ayana-midplaza"
+        nama_hotel: "Hotel Ayana Midplaza Jakarta"
+        alamat: "Jl. Jend. Sudirman Kav 10-11"
+        kota: "Jakarta"
+        latitude: -6.2150
+        longitude: 106.8100
+      - id_kompetitor: "hotel-sahid-jaya"
+        nama_hotel: "Sahid Jaya Hotel Jakarta"
+        alamat: "Jl. Jend. Sudirman Kav 86"
+        kota: "Jakarta"
+        latitude: -6.2000
+        longitude: 106.8150
+      - id_kompetitor: "hotel-four-seasons"
+        nama_hotel: "Four Seasons Hotel Jakarta"
+        alamat: "Jl. HR Rasuna Said Kav 18"
+        kota: "Jakarta"
+        latitude: -6.2300
+        longitude: 106.8350
+      - id_kompetitor: "hotel-dharmawangsa"
+        nama_hotel: "The Dharmawangsa Jakarta"
+        alamat: "Jl. Brawijaya Raya No.26"
+        kota: "Jakarta"
+        latitude: -6.2400
+        longitude: 106.7900
+
+  transport:
+    enabled: true
+    period: latest
+    grain: snapshot
+    playwright_required: true
+
+  poi:
+    enabled: true
+    period: latest
+    grain: snapshot
+    # query diproses serial (1) agar tidak menumbuk mirror Overpass publik;
+    # naikkan bila mirror sanggup menangani lebih dari satu query serentak.
+    overpass_workers: 1
+
+  hari_libur:
+    enabled: true
+    period: latest
+    grain: year
+
+  kurs:
+    enabled: true
+    period: latest
+    grain: year
+
+  event:
+    enabled: true
+    period: latest
+    grain: year

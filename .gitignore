@@ -1,0 +1,21 @@
+# environment
+.env
+.venv/
+venv/
+
+# data lake (lokal, tidak di-commit)
+data_lake/
+!data_lake/.gitkeep
+
+# log per stage/sumber (ditulis otomatis oleh pipeline)
+log/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# editor
+.vscode/
+.idea/
