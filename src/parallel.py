@@ -9,10 +9,10 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
 from .pipeline import get_stage_path, run_stage
-from .shared.dataset_filter import dataset_terpilih, set_dataset_filter
 from .shared.live_view import RencanaBaris, TampilanPipeline, dukung_live
 from .shared.logging_utils import setup_logging
 from .shared.row_limit import set_row_limit
+from .shared.run_options import get_dry_run, set_dry_run
 
 _ANTRIAN: multiprocessing.Queue | None = None
 
@@ -43,9 +43,9 @@ def _init_worker(
     antrian: multiprocessing.Queue,
     limit: int | None,
     antre_log: bool,
-    datasets: tuple[str, ...] | None = None,
+    dry_run: bool = False,
 ) -> None:
-    """Initializer tiap proses worker: simpan antrian, siapkan logging, limit & filter dataset."""
+    """Initializer tiap proses worker: simpan antrian, siapkan logging, limit & dry-run."""
     global _ANTRIAN
     _ANTRIAN = antrian
     setup_logging()
@@ -53,8 +53,8 @@ def _init_worker(
         _pasang_antrean_log(antrian)
     if limit is not None:
         set_row_limit(limit)
-    if datasets:
-        set_dataset_filter(datasets)
+    if dry_run:
+        set_dry_run(True)
 
 
 def _pasang_antrean_log(antrian: multiprocessing.Queue) -> None:
@@ -84,7 +84,7 @@ def jalankan_sumber(sumber: str, stages: tuple[str, ...] | None = None) -> dict[
         _kirim((sumber, stage.upper(), "mulai", None, None))
         mulai = time.time()
         try:
-            result = run_stage(sumber, stage)
+            result = run_stage(sumber, stage, dry_run=get_dry_run())
             n_dataset = len(result)
             n_baris = sum(len(v) for v in result.values())
             detik = round(time.time() - mulai, 1)
@@ -164,14 +164,16 @@ def jalankan_paralel(
     workers: int = 4,
     limit: int | None = None,
     stages: tuple[str, ...] | None = None,
-    datasets: tuple[str, ...] | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """Jalankan semua sumber aktif secara paralel dengan tampilan live in-place.
 
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
-    datasets -> batasi dataset per sumber, mis. ('harga',) utk --harga.
+    dry_run -> hanya baca & laporkan, tanpa menulis file/DB.
     """
     stages = stages or STAGES
+    if dry_run:
+        set_dry_run(True)
     antrian: multiprocessing.Queue = multiprocessing.Queue()
     per_sumber: dict = {s: {"status": "?", "stages": {}} for s in sumber_aktif}
     berhenti = threading.Event()
@@ -180,20 +182,16 @@ def jalankan_paralel(
     catatan_uji = None
     if limit is not None:
         catatan_uji = f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)"
-    catatan_dataset = None
-    if datasets:
-        catatan_dataset = f"  (dataset dibatasi: {', '.join(datasets)})"
+    catatan_dry_run = "  (dry-run: tidak ada file/DB yang ditulis)" if dry_run else None
+    catatan = [c for c in (catatan_uji, catatan_dry_run) if c]
+
     if tampilan is not None:
-        if catatan_uji:
-            print(catatan_uji)
-        if catatan_dataset:
-            print(catatan_dataset)
+        for c in catatan:
+            print(c)
         tampilan.mulai()
     else:
-        if catatan_uji:
-            print(catatan_uji)
-        if catatan_dataset:
-            print(catatan_dataset)
+        for c in catatan:
+            print(c)
 
     konsumen = threading.Thread(
         target=_konsumsi, args=(antrian, per_sumber, berhenti, tampilan), daemon=True
@@ -205,7 +203,7 @@ def jalankan_paralel(
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker,
-            initargs=(antrian, limit, antre_log, datasets or None),
+            initargs=(antrian, limit, antre_log, dry_run),
         ) as executor:
             futures = [executor.submit(jalankan_sumber, s, stages) for s in sumber_aktif]
             for f in futures:

@@ -33,12 +33,10 @@ def sumber_dari_logger(name: str) -> tuple[str, str] | None:
 
     - src.extract.bps_scraper             -> ('extract', 'bps')
     - src.transform.hari_libur_transform -> ('transform', 'hari_libur')
-    - src.load.gmaps_load                 -> ('load', 'gmaps')
+    - src.load.gmaps_harga_load           -> ('load', 'gmaps_harga')
     - src.shared.storage / root / ''      -> None (bukan script pipeline)
 
-    Dipakai dua tempat: `_record_target` untuk menentukan file log, dan
-    `src/shared/live_view.py` untuk menempelkan jumlah peringatan/error ke
-    baris script yang benar.
+    Dipakai `_record_target` untuk menentukan file log per stage & sumber.
     """
     m = _STAGE_RE.match(name or "")
     if not m:
@@ -52,7 +50,7 @@ def _record_target(name: str, log_dir: Path) -> Path:
 
     - src.extract.bps_scraper          -> <log_dir>/extract/bps.log
     - src.transform.hari_libur_transform -> <log_dir>/transform/hari_libur.log
-    - src.load.gmaps_load              -> <log_dir>/load/gmaps.log
+    - src.load.gmaps_harga_load        -> <log_dir>/load/gmaps_harga.log
     - selain itu (root, src.shared.*)  -> <log_dir>/pipeline.log
     """
     kunci = sumber_dari_logger(name)

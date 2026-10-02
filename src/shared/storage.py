@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -30,7 +31,16 @@ def _tulis(path: Path, df: pd.DataFrame) -> Path:
         )
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    # Tulis ke file sementara lalu pakai replace: file bronze yang terpotong
+    # karena run kill di tengah tulis akan menggagalkan seluruh pembacaan
+    # periode berikutnya, dan parquet lama tidak bisa dipertahankan.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     return path
 
 

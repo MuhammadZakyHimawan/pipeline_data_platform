@@ -55,10 +55,15 @@ _PIPES: dict[str, dict] = {
         "transform": "src.transform.trends_transform",
         "load": "src.load.trends_load",
     },
-    "gmaps": {
-        "extract": "src.extract.gmaps_scraper",
-        "transform": "src.transform.gmaps_transform",
-        "load": "src.load.gmaps_load",
+    "gmaps_harga": {
+        "extract": "src.extract.gmaps_harga_scraper",
+        "transform": "src.transform.gmaps_harga_transform",
+        "load": "src.load.gmaps_harga_load",
+    },
+    "gmaps_review": {
+        "extract": "src.extract.gmaps_review_scraper",
+        "transform": "src.transform.gmaps_review_transform",
+        "load": "src.load.gmaps_review_load",
     },
     "transport": {
         "extract": "src.extract.transport_scraper",

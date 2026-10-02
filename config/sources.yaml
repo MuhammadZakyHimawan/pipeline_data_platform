@@ -137,90 +137,51 @@ sources:
       - nama: "Raja Ampat"
         kategori: "Destinasi"
 
-  gmaps:
-    enabled: true
-    period: latest
-    grain: snapshot
+  # ---- Gmaps: dua sumber terpisah karena cadence-nya beda -------------
+  # Nama/koordinat hotel pembanding BUKAN dari file ini: registry hotel dibaca
+  # dari database (lihat hotel_master_schema/table di bawah). Tambah hotel di
+  # tabel database itu, bukan di sources.yaml.
+  #
+  # headless: WAJIB false untuk kedua sumber. Google Maps tidak merender tab
+  # "Ulasan" maupun daftar ulasan di Chromium headless; panel place hanya
+  # muncul sebagai "Ringkasan / Harga / Tentang" sehingga hasil scrape selalu
+  # 0 baris. Sudah diverifikasi dengan hotel yang jelas berulasan ribuan.
+  # Node headful juga tidak seburuk itu: 1 worker = 1 proses Chromium, jadi
+  # 5 worker = 5 jendela browser.
+
+  gmaps_harga:
+    # Nonaktif sementara: modul gmaps_harga_* belum ada, gmaps_review dulu yang
+    # diverifikasi. Nyalakan lagi setelah src/extract/gmaps_harga_scraper.py ada.
+    enabled: false
+    headless: false
+    grain: year
     playwright_required: true
+    hotel_master_schema: "public"
+    hotel_master_table: "hotel_master"
     # Tanggal check-in yang diambil tiap hotel (H+1..H+7, H+30, H+60).
     lead_times: [1, 2, 3, 4, 5, 6, 7, 30, 60]
+    # Jumlah browser paralel. Sync API Playwright tidak thread-safe, jadi tiap
+    # worker menjalankan playwright+browser sendiri (1 worker = 1 proses
+    # Chromium). 5 worker memotong waktu run ~5x dibanding serial.
+    harga_workers: 5
+    blokir_gambar: true
+    batas_detik_per_hotel: 420
+
+  gmaps_review:
+    # enabled: false = tidak ikut "jalan semua"; dipanggil manual per bulan
+    # (`main.py gmaps_review`). Seed belum dihitung, jadi belum tentu lengkap.
+    enabled: false
+    headless: false
+    grain: month
+    playwright_required: true
+    hotel_master_schema: "public"
+    hotel_master_table: "hotel_master"
     max_reviews_per_hotel: 200
-    # Daftar hotel UTAMA dibaca dari DB: gold.gmaps_hotel_master.
-    # Tambah/hapus hotel di tabel itu, bukan di file ini.
-    # Daftar di bawah hanya CADANGAN, dipakai bila tabel DB kosong/tidak terbaca.
-    daftar_hotel:
-      - id_kompetitor: "hotel-kempinski"
-        nama_hotel: "Hotel Indonesia Kempinski"
-        alamat: "Jl. M.H. Thamrin No.1"
-        kota: "Jakarta"
-        latitude: -6.1942
-        longitude: 106.8224
-      - id_kompetitor: "hotel-grand-hyatt"
-        nama_hotel: "Grand Hyatt Jakarta"
-        alamat: "Jl. M.H. Thamrin Kav 28-30"
-        kota: "Jakarta"
-        latitude: -6.1952
-        longitude: 106.8237
-      - id_kompetitor: "hotel-mandarin"
-        nama_hotel: "Mandarin Oriental Jakarta"
-        alamat: "Jl. M.H. Thamrin No.1"
-        kota: "Jakarta"
-        latitude: -6.1937
-        longitude: 106.8175
-      - id_kompetitor: "hotel-ritz-pacific"
-        nama_hotel: "The Ritz-Carlton Jakarta Pacific Place"
-        alamat: "Jl. Jend. Sudirman Kav 52-53"
-        kota: "Jakarta"
-        latitude: -6.2250
-        longitude: 106.8068
-      - id_kompetitor: "hotel-ritz-mega-kuningan"
-        nama_hotel: "The Ritz-Carlton Jakarta Mega Kuningan"
-        alamat: "Jl. DR. Ide Anak Agung Gde Agung Kav E.1.1"
-        kota: "Jakarta"
-        latitude: -6.2250
-        longitude: 106.8220
-      - id_kompetitor: "hotel-fairmont"
-        nama_hotel: "Fairmont Jakarta"
-        alamat: "Jl. Asia Afrika No.8"
-        kota: "Jakarta"
-        latitude: -6.2250
-        longitude: 106.8000
-      - id_kompetitor: "hotel-westin"
-        nama_hotel: "The Westin Jakarta"
-        alamat: "Jl. H.R. Rasuna Said Kav 9-10"
-        kota: "Jakarta"
-        latitude: -6.2300
-        longitude: 106.8300
-      - id_kompetitor: "hotel-pullman-central-park"
-        nama_hotel: "Pullman Jakarta Central Park"
-        alamat: "Jl. Letjen S. Parman Kav 28"
-        kota: "Jakarta"
-        latitude: -6.1700
-        longitude: 106.7870
-      - id_kompetitor: "hotel-ayana-midplaza"
-        nama_hotel: "Hotel Ayana Midplaza Jakarta"
-        alamat: "Jl. Jend. Sudirman Kav 10-11"
-        kota: "Jakarta"
-        latitude: -6.2150
-        longitude: 106.8100
-      - id_kompetitor: "hotel-sahid-jaya"
-        nama_hotel: "Sahid Jaya Hotel Jakarta"
-        alamat: "Jl. Jend. Sudirman Kav 86"
-        kota: "Jakarta"
-        latitude: -6.2000
-        longitude: 106.8150
-      - id_kompetitor: "hotel-four-seasons"
-        nama_hotel: "Four Seasons Hotel Jakarta"
-        alamat: "Jl. HR Rasuna Said Kav 18"
-        kota: "Jakarta"
-        latitude: -6.2300
-        longitude: 106.8350
-      - id_kompetitor: "hotel-dharmawangsa"
-        nama_hotel: "The Dharmawangsa Jakarta"
-        alamat: "Jl. Brawijaya Raya No.26"
-        kota: "Jakarta"
-        latitude: -6.2400
-        longitude: 106.7900
+    review_workers: 2
+    blokir_gambar: true
+    # Batas waktu per hotel supaya satu hotel yang macet tidak menahan run
+    # bulanan selama berjam-jam.
+    batas_detik_per_hotel: 90
 
   transport:
     enabled: true

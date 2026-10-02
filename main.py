@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -15,7 +16,6 @@ from src.pipeline import (
 )
 from src.shared.db import ensure_schema
 from src.shared.config import get_db_config, get_source_config
-from src.shared.dataset_filter import get_dataset_filter, set_dataset_filter
 from src.shared.live_view import (
     RencanaBaris,
     TampilanPipeline,
@@ -24,6 +24,11 @@ from src.shared.live_view import (
 )
 from src.shared.logging_utils import setup_logging
 from src.shared.row_limit import get_row_limit, set_row_limit
+from src.shared.run_options import (
+    set_dry_run,
+    set_headful,
+    set_resume,
+)
 
 try:
     import typer
@@ -118,6 +123,8 @@ def _run_argparse() -> None:
             raise SystemExit(1)
 
 
+log = logging.getLogger(__name__)
+
 ORDERSUMBER = [
     "bps",
     "kurs",
@@ -128,7 +135,8 @@ ORDERSUMBER = [
     "poi",
     "trends",
     "transport",
-    "gmaps",
+    "gmaps_harga",
+    "gmaps_review",
 ]
 
 WORKERS_DEFAULT = 4
@@ -140,20 +148,14 @@ _SRC_LIMIT_RE = re.compile(r"^(\w+)\[(\d+)\]$")
 _SRC_ONLY_RE = re.compile(r"^(\w+)$")
 
 # Flag tahap untuk jalur pintasan: '--bronze' = jalankan stage extract saja.
-# Ditabulasi dengan pintasan sumber/limit, mis. `main.py gmaps[5] --bronze`.
+# Ditabulasi dengan pintasan sumber/limit, mis. `main.py gmaps_harga[5] --bronze`.
 _STAGE_FLAG = {
     "--bronze": ("extract",),
+    "--silver": ("transform",),
 }
 
-# Flag sumber: '--<sumber>' untuk semua sumber di ORDERSUMBER, mis. --gmaps.
+# Flag sumber: '--<sumber>' untuk semua sumber di ORDERSUMBER, mis. --gmaps_harga.
 _SUMBER_FLAG = {f"--{s}": s for s in ORDERSUMBER}
-
-# Flag dataset: '--<dataset>' membatasi sumber hanya meng-scrape dataset itu,
-# mis. `--harga` -> gmaps hanya ambil harga, tanpa ulasan.
-_DATASET_FLAG = {
-    "--harga": "harga",
-    "--review": "review",
-}
 
 
 class OpsiCLI:
@@ -163,27 +165,45 @@ class OpsiCLI:
         self.sisa: list[str] = []
         self.stages: tuple[str, ...] | None = None
         self.sumber: str | None = None
-        self.datasets: tuple[str, ...] = ()
+        self.dry_run: bool = False
+        self.headful: bool = False
+        self.resume: bool = False
 
     @property
     def pakai_pintasan(self) -> bool:
-        return self.stages is not None or self.sumber is not None or bool(self.datasets)
+        return (
+            self.stages is not None
+            or self.sumber is not None
+            or self.dry_run
+            or self.headful
+            or self.resume
+        )
+
+
+# Flag uji: tidak memengaruhi tahap mana yang jalan, hanya cara kerjanya.
+_UJI_FLAG = {
+    "--dry-run": "dry_run",
+    "--headful": "headful",
+    "--lanjut": "resume",
+}
 
 
 def _urai_flag(args: list[str]) -> OpsiCLI:
-    """Pisahkan flag pintasan (tahap/sumber/dataset) dari argumen lain.
+    """Pisahkan flag pintasan (tahap/sumber/uji) dari argumen lain.
 
     Flag yang dikenali:
       --bronze        -> stage extract saja
-      --<sumber>      -> jalankan satu sumber, mis. --gmaps
-      --<dataset>     -> batasi dataset, mis. --harga
+      --silver        -> stage transform saja
+      --<sumber>      -> jalankan satu sumber, mis. --gmaps_harga
+      --dry-run       -> jalankan tanpa menulis file/DB
+      --headful       -> tampilkan browser (debug selector)
+      --lanjut        -> lanjutkan dari checkpoint
 
     Tanpa flag yang dikenali, `sisa` dikembalikan utuh dan stages=None sehingga
     jalur typer serta pintasan lama (positional) tidak berubah.
     """
     opsi = OpsiCLI()
     terpilih: list[str] = []
-    dataset_terpilih: list[str] = []
     for arg in args:
         kunci = arg.strip().lower()
         tahap = _STAGE_FLAG.get(kunci)
@@ -200,21 +220,14 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
                 raise SystemExit(1)
             opsi.sumber = sumber
             continue
-        dataset = _DATASET_FLAG.get(kunci)
-        if dataset is not None:
-            dataset_terpilih.append(dataset)
+        uji = _UJI_FLAG.get(kunci)
+        if uji is not None:
+            setattr(opsi, uji, True)
             continue
         opsi.sisa.append(arg)
 
-    # Validasi "dataset wajib ada sumber" ditunda ke _jalankan_pintasan supaya
-    # positional (mis. `main.py gmaps --harga`) ikut terperhitungkan.
     if terpilih:
         opsi.stages = tuple(s for s in STAGES if s in terpilih)
-    elif dataset_terpilih:
-        # Filter dataset hanya bermakna di extract; tanpa --bronze, tetapkan
-        # extract supaya transform/load lama tidak ikut jalan dan gagal.
-        opsi.stages = ("extract",)
-    opsi.datasets = tuple(dict.fromkeys(dataset_terpilih))
     return opsi
 
 
@@ -250,7 +263,13 @@ def _parse_shortcut(args: list[str]) -> Optional[tuple[Optional[str], Optional[i
 
 
 def _piih_sumber(pilihan: Optional[list[str]] = None) -> tuple[list[str], list[str]]:
-    """Tentukan sumber enabled; disabled/absent tercatat sebagai SKIP."""
+    """Tentukan sumber yang akan jalan; yang tidak jalan dicatat sebagai SKIP.
+
+    `enabled` di config/sources.yaml hanya mengatur perilaku "jalankan semua".
+    Kalau sumber disebut eksplisit di CLI, permintaan itu yang menang: sumber
+    bulanan seperti gmaps_review sengaja enabled=false supaya tidak ikut jalan
+    setiap hari, tapi `main.py gmaps_review` harus tetap bisa menjalankannya.
+    """
     himpunan_pilihan = set(pilihan) if pilihan else None
     sumber_aktif: list[str] = []
     skips: list[str] = []
@@ -263,8 +282,10 @@ def _piih_sumber(pilihan: Optional[list[str]] = None) -> tuple[list[str], list[s
             skips.append(f"  [SKIP] {sumber:12s} -> tidak ada di sources.yaml ({exc})")
             continue
         if not cfg.get("enabled", True):
-            skips.append(f"  [SKIP] {sumber:12s} -> disabled di config/sources.yaml")
-            continue
+            if himpunan_pilihan is None:
+                skips.append(f"  [SKIP] {sumber:12s} -> disabled di config/sources.yaml")
+                continue
+            log.info("source '%s' disabled di config, tapi diminta eksplisit -> dijalankan", sumber)
         sumber_aktif.append(sumber)
     return sumber_aktif, skips
 
@@ -272,11 +293,13 @@ def _piih_sumber(pilihan: Optional[list[str]] = None) -> tuple[list[str], list[s
 def _run_sources(
     pilihan: Optional[list[str]] = None,
     stages: Optional[tuple[str, ...]] = None,
+    dry_run: bool = False,
 ) -> None:
     """Jalankan sumber enabled per stage secara serial.
 
     pilihan=None  -> seluruh sumber; pilihan=[...] -> hanya sumber tsb.
     stages=None   -> extract -> transform -> load; mis. ('extract',) utk --bronze.
+    dry_run=True  -> jalankan tanpa menulis file/DB.
     """
     logger = setup_logging()
 
@@ -291,10 +314,6 @@ def _run_sources(
     stages = stages or STAGES
     limit = get_row_limit()
     sumber_aktif, skips = _piih_sumber(pilihan)
-    filter_dataset = get_dataset_filter()
-    if filter_dataset:
-        echo(f"  (dataset dibatasi: {', '.join(filter_dataset)})")
-
     hasil_per_sumber: dict[str, dict] = {}
     gagal: list[str] = []
 
@@ -305,18 +324,19 @@ def _run_sources(
         for st in stages
     ]
     tampilan = TampilanPipeline(rencana) if dukung_live() else None
-    catatan_uji = None
+    catatan: list[str] = []
     if limit is not None:
-        catatan_uji = f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)"
+        catatan.append(f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)")
+    if dry_run:
+        catatan.append("  (dry-run: tidak ada file/DB yang ditulis)")
     if tampilan is not None:
-        # Jalur serial tidak punya antrian antar-proses seperti worker paralel,
-        # jadi record WARNING+ harus dialihkan ke tampilan agar tidak menimpa frame.
         pasang_tampilan_log(tampilan)
-        if catatan_uji:
-            echo(catatan_uji)
+        for baris in catatan:
+            echo(baris)
         tampilan.mulai()
-    elif catatan_uji:
-        echo(catatan_uji)
+    else:
+        for baris in catatan:
+            echo(baris)
 
     for stage in stages:
         for sumber in sumber_aktif:
@@ -324,7 +344,7 @@ def _run_sources(
                 tampilan.muat(sumber, stage, "jalan", None, None)
             start = time.time()
             try:
-                result = run_stage(sumber, stage)
+                result = run_stage(sumber, stage, dry_run=dry_run)
                 status = "ok"
                 info = f"{sum(len(v) for v in result.values())} baris"
             except Exception as exc:
@@ -360,10 +380,11 @@ def _run_sources(
         raise SystemExit(1)
 
 
-def run_all(stages: Optional[tuple[str, ...]] = None) -> None:
+def run_all(stages: Optional[tuple[str, ...]] = None, dry_run: bool = False) -> None:
     """Jalankan seluruh sumber enabled secara paralel (default 4 worker).
 
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
+    dry_run=True  -> jalankan tanpa menulis file/DB.
     """
     setup_logging()
     stages = stages or STAGES
@@ -374,12 +395,16 @@ def run_all(stages: Optional[tuple[str, ...]] = None) -> None:
         workers=workers,
         limit=get_row_limit(),
         stages=stages,
-        datasets=get_dataset_filter(),
+        dry_run=dry_run,
     )
     cetak_ringkasan(per, skips, stages=stages)
 
 
-def run_single(source: str, stages: Optional[tuple[str, ...]] = None) -> None:
+def run_single(
+    source: str,
+    stages: Optional[tuple[str, ...]] = None,
+    dry_run: bool = False,
+) -> None:
     """Jalankan satu sumber (extract -> transform -> load)."""
     if HAS_TYPER:
         secho, colors = typer.secho, typer.colors
@@ -395,35 +420,31 @@ def run_single(source: str, stages: Optional[tuple[str, ...]] = None) -> None:
             fg=colors.RED,
         )
         raise SystemExit(1)
-    _run_sources([source], stages)
+    _run_sources([source], stages, dry_run=dry_run)
 
 
 def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     """Jalankan sesuai hasil urai flag pintasan."""
-    set_dataset_filter(opsi.datasets)
+    set_dry_run(opsi.dry_run)
+    set_headful(opsi.headful)
+    set_resume(opsi.resume)
     if not opsi.sisa:
         if opsi.sumber is None:
             set_row_limit(None)
-            run_all(opsi.stages)
+            run_all(opsi.stages, dry_run=opsi.dry_run)
         else:
-            run_single(opsi.sumber, opsi.stages)
+            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run)
         return
 
     pintasan = _parse_shortcut(opsi.sisa)
-    if opsi.datasets and opsi.sumber is None and (pintasan is None or pintasan[0] is None):
-        sys.stderr.write(
-            f"ERROR: flag dataset ({' '.join(sorted(_DATASET_FLAG))}) harus dipakai "
-            f"bersama satu sumber, mis. main.py --gmaps --harga\n"
-        )
-        raise SystemExit(1)
     if pintasan is None:
         contoh = " | ".join(
             [
                 "main.py --bronze",
-                "main.py --gmaps --harga",
-                "main.py --bronze --gmaps --harga",
-                "main.py gmaps --bronze --harga",
-                "main.py gmaps[5] --bronze --harga",
+                "main.py --gmaps_harga --bronze",
+                "main.py --gmaps_harga[5] --bronze --dry-run",
+                "main.py gmaps_harga --bronze --headful",
+                "main.py gmaps_review[1] --bronze --dry-run --headful",
             ]
         )
         sys.stderr.write(f"ERROR: {opsi.sisa[0]} bukan sumber yang dikenal\n  Contoh: {contoh}\n")
@@ -438,9 +459,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
         target = opsi.sumber
     set_row_limit(limit)
     if target is None:
-        run_all(opsi.stages)
+        run_all(opsi.stages, dry_run=opsi.dry_run)
     else:
-        run_single(target, opsi.stages)
+        run_single(target, opsi.stages, dry_run=opsi.dry_run)
 
 
 def main() -> None:

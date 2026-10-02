@@ -1,0 +1,838 @@
+"""Scrape harga OTA (Google Travel) per hotel -> bronze.
+
+Port dari bagian Google Travel di `gmaps_scraper.py` lama. Alur: rakit URL
+`/travel/search` dengan parameter `ts=` (protobuf check-in/check-out), buka
+kartu hotel yang cocok, lalu baca daftar OTA (`#prices`) beserta harganya.
+Bila parameter `ts=` diabaikan Google, jatuh ke fallback klik kalender.
+
+Berbeda dengan modul lama, di sini:
+- registry hotel dibaca dari database (`hotel_master`), bukan config;
+- tiap worker punya browser sendiri lewat `jalankan_per_hotel`;
+- hasil ditulis ke data_lake bronze per tahun (mode append), bukan ke DB.
+
+Tidak ada penulisan gold di sumber ini.
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+import re
+import time
+from datetime import date, timedelta
+from difflib import SequenceMatcher
+
+import pandas as pd
+
+from ..shared.checkpoint import Checkpoint
+from ..shared.config import get_source_config
+from ..shared.hotel_master import daftar_hotel
+from ..shared.periods import resolve_years
+from ..shared.row_limit import get_row_limit
+from ..shared.run_options import get_resume
+from ..shared.storage import write_parquet_by_year
+from .gmaps_browser import (
+    build_search_query,
+    clean_price,
+    is_similar,
+    jalankan_per_hotel,
+    normalize_text,
+)
+
+log = logging.getLogger(__name__)
+
+SOURCE = "gmaps_harga"
+DATASET = "harga"
+
+NAMA_BULAN = {
+    1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni",
+    7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November",
+    12: "Desember",
+}
+NAMA_BULAN_EN = {
+    1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+    7: "July", 8: "August", 9: "September", 10: "October", 11: "November",
+    12: "December",
+}
+
+# OTA yang diakui saat mem-parse teks panel (cadangan bila baris `#prices`
+# tidak ter-render). Urutan tidak penting; nama dicocokkan case-insensitive.
+OTA_TERKENAL = [
+    "Traveloka", "Agoda", "Tiket.com", "Booking.com", "Expedia",
+    "Trip.com", "Klook", "Pegipegi", "RedDoorz", "OYO", "Zen Rooms",
+    "Nusatrip", "HotelTravel", "MyTours", "Dailytrips", "Mister Aladin",
+]
+
+SEL_SCOPE_PRICES = [
+    '#prices > c-wiz.K1smNd > c-wiz.tuyxUe > div > section > '
+    'div.A5WLXb.G3p8qb.q3c9pf > c-wiz > div',
+    '#prices',
+    '#prices c-wiz',
+]
+SEL_BARIS_OTA = 'div.ADs2Tc:has(span.FjC1We):has(span.nDkDDb)'
+SEL_NAMA_OTA = 'span.FjC1We'
+SEL_HARGA_OTA = 'span.nDkDDb'
+
+
+# ============================================================
+# ENCODER 'ts=' & URL GOOGLE TRAVEL
+# ============================================================
+
+def _varint(n: int) -> bytes:
+    out = []
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def encode_ts_param(checkin: date, checkout: date) -> str:
+    """Rakit parameter `ts=` (protobuf base64) untuk check-in/check-out."""
+    nights = (checkout - checkin).days
+
+    def _date_bytes(d):
+        return (b'\x08' + _varint(d.year) +
+                b'\x10' + _varint(d.month) +
+                b'\x18' + _varint(d.day))
+
+    payload = (
+        b'\x08\x01'
+        b'\x1a\x20'
+        b'\x0a\x02\x1a\x00'
+        b'\x12\x1a'
+        b'\x12\x14'
+        b'\x0a\x07' + _date_bytes(checkin) +
+        b'\x12\x07' + _date_bytes(checkout) +
+        b'\x18' + _varint(nights) +
+        b'\x32\x02\x08\x01'
+    )
+    return base64.b64encode(payload).decode('ascii').rstrip('=')
+
+
+def build_hotels_url(search_query: str, checkin: date, checkout: date) -> str:
+    from urllib.parse import quote_plus
+
+    q = quote_plus(search_query)
+    ts = encode_ts_param(checkin, checkout)
+    return f"https://www.google.com/travel/search?q={q}&hl=id&qs=CAAgACgA&ts={ts}&ap=MAE"
+
+
+# ============================================================
+# FALLBACK: KLIK KALENDER
+# ============================================================
+
+def _buka_field_kalender(page) -> bool:
+    for nama in ("Check-in", "Check in", "Checkin", "Tanggal masuk", "Masuk"):
+        for role in ("textbox", "button", "combobox"):
+            try:
+                el = page.get_by_role(role, name=re.compile(re.escape(nama), re.I))
+                if el.count() > 0:
+                    el.first.click(timeout=3000)
+                    return True
+            except Exception:
+                continue
+    for sel in ('input[placeholder*="heck"]',
+                '[aria-label*="heck-in"]',
+                '[aria-label*="heck in"]'):
+        try:
+            el = page.locator(sel)
+            if el.count() > 0:
+                el.first.click(timeout=3000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _label_bulan(tgl: date) -> dict:
+    return {
+        "id": f"{NAMA_BULAN[tgl.month]} {tgl.year}",
+        "en": f"{NAMA_BULAN_EN[tgl.month]} {tgl.year}",
+        "pendek_id": f"{NAMA_BULAN[tgl.month][:3]} {tgl.year}",
+        "pendek_en": f"{NAMA_BULAN_EN[tgl.month][:3]} {tgl.year}",
+    }
+
+
+def _teks_kalender(page) -> str:
+    for sel in ('div[role="dialog"]',
+                'div[aria-label*="alender" i]',
+                'div[aria-label*="tanggal" i]'):
+        try:
+            els = page.locator(sel)
+            if els.count() > 0:
+                teks = els.last.inner_text()
+                if teks:
+                    return teks
+        except Exception:
+            continue
+    try:
+        return page.inner_text("body")
+    except Exception:
+        return ""
+
+
+def _tekan_arah(page, maju: bool = True) -> bool:
+    istilah = (("next", "berikut", "selanjutnya", "lanjut", "kanan", "depan")
+               if maju else
+               ("previous", "sebelum", "kembali", "kiri", "belakang"))
+    for role in ("button", "img"):
+        els = page.get_by_role(
+            role,
+            name=re.compile(r"(next|prev|previous|sebelum|berikut|"
+                            r"selanjutnya|lanjut|kanan|kiri)", re.IGNORECASE),
+        )
+        for i in range(els.count()):
+            el = els.nth(i)
+            try:
+                lbl = (el.get_attribute("aria-label") or "") + " " + (el.inner_text() or "")
+            except Exception:
+                continue
+            if any(k in lbl.lower() for k in istilah):
+                try:
+                    el.click(timeout=3000)
+                    return True
+                except Exception:
+                    continue
+    try:
+        els = page.locator('button')
+        for i in range(els.count()):
+            el = els.nth(i)
+            try:
+                teks = (el.inner_text() or "").strip()
+            except Exception:
+                continue
+            if (maju and teks in ("\u203a", ">", "\u00bb", "\u276f")) or \
+                    (not maju and teks in ("\u2039", "<", "\u00ab", "\u276e")):
+                try:
+                    el.click(timeout=3000)
+                    return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
+def _pastikan_bulan_terlihat(page, tgl: date, max_percobaan: int = 36) -> bool:
+    target = set(_label_bulan(tgl).values())
+    for _ in range(max_percobaan):
+        teks = _teks_kalender(page)
+        if any(b.lower() in teks.lower() for b in target):
+            return True
+        if not _tekan_arah(page, maju=True):
+            return False
+        time.sleep(0.15)
+    return False
+
+
+def _klik_hari(page, tgl: date) -> bool:
+    hari = str(tgl.day)
+    label = _label_bulan(tgl)
+    peluang = ('div[role="gridcell"]', 'td[role="gridcell"]', 'td[class*="day"]',
+               'button[class*="day"]', 'table td', 'div[role="button"]',
+               '[role="gridcell"]')
+    for sel in peluang:
+        try:
+            els = page.locator(sel)
+            for i in range(els.count()):
+                el = els.nth(i)
+                try:
+                    if el.is_disabled():
+                        continue
+                    teks = (el.inner_text() or "").strip()
+                except Exception:
+                    continue
+                if teks != hari:
+                    continue
+                try:
+                    aria = (el.get_attribute("aria-label") or "")
+                except Exception:
+                    aria = ""
+                if aria:
+                    potongan = [v.lower() for v in label.values()]
+                    if not any(p in aria.lower() for p in potongan) and \
+                            re.search(r'20\d{2}', aria):
+                        continue
+                try:
+                    el.click(timeout=3000)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return False
+
+
+def set_dates_via_calendar(page, checkin: date, checkout: date) -> bool:
+    log.info("[Kalender] parameter ts= tidak dikenali; fallback klik kalender...")
+    if not _buka_field_kalender(page):
+        return False
+    time.sleep(0.25)
+    if not _pastikan_bulan_terlihat(page, checkin):
+        return False
+    if not _klik_hari(page, checkin):
+        return False
+    time.sleep(0.15)
+    if not _pastikan_bulan_terlihat(page, checkout):
+        return False
+    if not _klik_hari(page, checkout):
+        return False
+    time.sleep(0.15)
+    for nama in ("Done", "Selesai", "Simpan", "Terapkan"):
+        try:
+            btn = page.get_by_role("button", name=re.compile(re.escape(nama), re.I))
+            if btn.count() > 0:
+                btn.first.click(timeout=3000)
+                time.sleep(0.25)
+                return True
+        except Exception:
+            continue
+    return True
+
+
+def _ambil_teks_field_tanggal(page, pola) -> str:
+    for role in ("textbox", "button", "combobox"):
+        els = page.get_by_role(role, name=re.compile(pola, re.I))
+        for i in range(min(els.count(), 6)):
+            el = els.nth(i)
+            teks = ""
+            try:
+                teks = el.get_attribute("value") or ""
+            except Exception:
+                pass
+            if not teks:
+                try:
+                    teks = (el.inner_text() or "").strip()
+                except Exception:
+                    continue
+            if teks:
+                return teks.strip()
+    return ""
+
+
+def dates_are_set(page, checkin: date, checkout: date) -> bool:
+    teks_ci = _ambil_teks_field_tanggal(page, r".*check.?in.*|.*masuk.*")
+    teks_co = _ambil_teks_field_tanggal(page, r".*check.?out.*|.*keluar.*")
+    if not teks_ci and not teks_co:
+        return False
+
+    def _cocok(teks, tgl):
+        if not teks:
+            return False
+        if not re.search(rf"(?<!\d)0?{tgl.day}(?!\d)", teks):
+            return False
+        bulan_id = NAMA_BULAN[tgl.month]
+        bulan_en = NAMA_BULAN_EN[tgl.month]
+        pola_bulan = [bulan_id, bulan_id[:3], bulan_en, bulan_en[:3], str(tgl.month)]
+        if any(re.search(re.escape(b), teks, re.IGNORECASE) for b in pola_bulan):
+            return True
+        return str(tgl.year) in teks
+
+    return _cocok(teks_ci, checkin) and _cocok(teks_co, checkout)
+
+
+def open_hotel_search(page, search_query: str, checkin: date, checkout: date) -> bool:
+    """Buka Google Travel untuk satu skenario tanggal."""
+    url = build_hotels_url(search_query, checkin, checkout)
+    ts_val = url.split("ts=", 1)[1].split("&", 1)[0]
+    for _ in range(2):
+        page.goto(url, timeout=30000)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            time.sleep(0.75)
+        from .gmaps_browser import bypass_cookie
+
+        bypass_cookie(page)
+        if f"ts={ts_val}" in page.url:
+            return True
+    log.info("[DEBUG] ts= hilang; fallback kalender...")
+    if set_dates_via_calendar(page, checkin, checkout):
+        time.sleep(0.5)
+        return True
+    return False
+
+
+# ============================================================
+# EKSTRAKSI HARGA OTA
+# ============================================================
+
+def _tunggu_hasil_hotel(page, timeout_ms: int = 8000) -> bool:
+    for sel in ('div.uaTTDe',
+                'a[href^="https://www.google.com/travel/hotels/"]'):
+        try:
+            page.locator(sel).first.wait_for(state="attached", timeout=timeout_ms)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _penanda_sponsor():
+    return re.compile(r"bersponsor|sponsor|iklan|sponsored|\bads?\b", re.I)
+
+
+def _nama_dari_kartu(kartu) -> str:
+    for sel in ('h2', 'h3', 'a[href*="/hotels/"]'):
+        try:
+            els = kartu.locator(sel)
+            for i in range(min(els.count(), 3)):
+                teks = (els.nth(i).inner_text() or "").strip()
+                if teks:
+                    return teks
+        except Exception:
+            continue
+    return ""
+
+
+def _pilih_kartu_organik_best_match(page, nama_hotel: str):
+    kartu = page.locator('div.uaTTDe')
+    if kartu.count() == 0:
+        return None
+    penanda = _penanda_sponsor()
+    batas = kartu.count()
+    kandidat_terbaik = None
+    skor_terbaik = -1
+    for i in range(batas):
+        el = kartu.nth(i)
+        try:
+            teks_kartu = el.inner_text() or ""
+        except Exception:
+            continue
+        if penanda.search(teks_kartu):
+            continue
+        nama = _nama_dari_kartu(el)
+        if not nama:
+            continue
+        nama_lower = normalize_text(nama_hotel)
+        nama_card = normalize_text(nama)
+        if nama_lower == nama_card or nama_lower in nama_card or nama_card in nama_lower:
+            return el
+        skor = SequenceMatcher(None, nama_lower, nama_card).ratio()
+        if skor > skor_terbaik:
+            skor_terbaik = skor
+            kandidat_terbaik = el
+    if kandidat_terbaik and skor_terbaik >= 0.5:
+        return kandidat_terbaik
+    for i in range(batas):
+        try:
+            el = kartu.nth(i)
+            if not penanda.search(el.inner_text() or ""):
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def _parse_ota_dari_teks(teks) -> list[dict]:
+    """Cari pasangan OTA-harga dari teks bebas panel harga."""
+    if not teks:
+        return []
+    teks = re.sub(r"\s+", " ", str(teks))
+    spots_utama = [(m.start(), clean_price(m.group(0)))
+                   for m in re.finditer(r"(?:Rp|IDR)\s*[\d.,]+", teks)]
+    spots_cadangan = [(m.start(), clean_price(m.group(0)))
+                      for m in re.finditer(r"\b\d{1,3}(?:[.,]\d{3})+\b", teks)]
+    spots = spots_utama or spots_cadangan
+    hasil: dict[str, int] = {}
+    for ota in OTA_TERKENAL:
+        for m in re.finditer(re.escape(ota), teks, re.I):
+            pos = m.start()
+            jarak, harga_terdekat = None, None
+            for ppos, h in spots:
+                if h <= 0:
+                    continue
+                d = abs(ppos - pos)
+                if d <= 250 and (jarak is None or d < jarak):
+                    jarak, harga_terdekat = d, h
+            if harga_terdekat is not None:
+                hasil[ota] = min(hasil.get(ota, harga_terdekat), harga_terdekat)
+    return [{"sumber": ota, "harga": h} for ota, h in hasil.items()]
+
+
+def _dialog_hotel(page, nama_hotel: str):
+    try:
+        dialogs = page.locator('div[role="dialog"]')
+        if dialogs.count() == 0:
+            return None
+        target = normalize_text(nama_hotel)
+        for i in range(dialogs.count()):
+            try:
+                teks = normalize_text(dialogs.nth(i).inner_text())
+            except Exception:
+                continue
+            if target and teks and target in teks:
+                return dialogs.nth(i)
+        return dialogs.last
+    except Exception:
+        return None
+
+
+def _teks_panel_lengkap(page, nama_hotel: str | None = None) -> str:
+    bagian = []
+    es = []
+    dialog = None
+    try:
+        dialog = _dialog_hotel(page, nama_hotel) if nama_hotel else None
+    except Exception:
+        dialog = None
+    if dialog is not None:
+        try:
+            teks = dialog.inner_text()
+            if teks:
+                bagian.append(teks)
+        except Exception:
+            pass
+        es = [dialog]
+    else:
+        try:
+            dl = page.locator('div[role="dialog"]')
+            if dl.count() > 0:
+                dlg = dl.last
+                teks = dlg.inner_text()
+                if teks:
+                    bagian.append(teks)
+                es = [dlg]
+        except Exception:
+            pass
+    for scope_h in es:
+        for sel, atr in (('img[alt]', 'alt'), ('[aria-label]', 'aria-label')):
+            try:
+                els = scope_h.locator(sel)
+                for i in range(min(els.count(), 150)):
+                    try:
+                        val = (els.nth(i).get_attribute(atr) or "").strip()
+                    except Exception:
+                        continue
+                    if val:
+                        bagian.append(val)
+            except Exception:
+                continue
+    teks = "\n".join(bagian).strip()
+    if len(teks) > 20:
+        return teks
+    try:
+        return page.inner_text("body")
+    except Exception:
+        return teks
+
+
+def _klik_kartu(page, kartu) -> bool:
+    klik_ok = False
+    for sel in ('a[href*="/hotels/"]', 'h2', 'h3'):
+        try:
+            el = kartu.locator(sel).first
+            if el.count() > 0 and el.is_visible():
+                el.click(timeout=3000)
+                klik_ok = True
+                break
+        except Exception:
+            continue
+    if not klik_ok:
+        try:
+            kartu.click(timeout=3000)
+            klik_ok = True
+        except Exception:
+            return False
+    try:
+        page.locator('#prices, div[role="dialog"]').first.wait_for(
+            state="attached", timeout=4000)
+    except Exception:
+        time.sleep(0.4)
+    return True
+
+
+def _scroll_di_detail(page, langkah: int = 1, jeda: float = 0.15) -> bool:
+    for _ in range(langkah):
+        try:
+            page.evaluate("window.scrollBy(0, 600)")
+        except Exception:
+            pass
+        time.sleep(jeda)
+    return True
+
+
+def _cari_scope_prices(page):
+    for sel in SEL_SCOPE_PRICES:
+        try:
+            scope = page.locator(sel)
+            if scope.count() > 0:
+                return scope
+        except Exception:
+            continue
+    return None
+
+
+def _nama_dari_baris(baris, nama_hotel: str) -> str:
+    try:
+        el = baris.locator(SEL_NAMA_OTA).first
+        nama = (el.inner_text() or "").strip()
+    except Exception:
+        nama = ""
+    if not nama:
+        try:
+            nama = (baris.inner_text().splitlines()[0] or "").strip()
+        except Exception:
+            nama = ""
+    if nama and nama_hotel and is_similar(nama, nama_hotel, threshold=0.6):
+        return "Official site"
+    return nama
+
+
+def _ekstrak_ota_all_options(page, nama_hotel: str | None = None) -> list[dict]:
+    hasil: dict[str, int] = {}
+    scope = _cari_scope_prices(page)
+    if scope is None:
+        return []
+    try:
+        baris_all = scope.locator(SEL_BARIS_OTA)
+        jumlah = baris_all.count()
+    except Exception:
+        return []
+    for i in range(min(jumlah, 400)):
+        try:
+            baris = baris_all.nth(i)
+            sumber = _nama_dari_baris(baris, nama_hotel)
+            if not sumber:
+                continue
+            harga = None
+            harga_el = baris.locator(SEL_HARGA_OTA)
+            for j in range(min(harga_el.count(), 20)):
+                try:
+                    nilai = clean_price(harga_el.nth(j).inner_text())
+                except Exception:
+                    continue
+                if nilai > 0:
+                    harga = nilai if harga is None else min(harga, nilai)
+            if not harga or harga <= 0:
+                continue
+            hasil[sumber] = min(hasil.get(sumber, harga), harga)
+        except Exception:
+            continue
+    return [{"sumber": s, "harga": h} for s, h in hasil.items()]
+
+
+def _klik_opsi_lainnya(page) -> bool:
+    pola_list = (
+        "Lihat opsi lainnya mulai dari",
+        "opsi lainnya",
+        "lihat opsi",
+        "lihat semua",
+        "semua opsi",
+        "more options",
+    )
+
+    def _coba_klik(el):
+        try:
+            if el.count() > 0 and el.is_visible():
+                el.click(timeout=2000)
+                try:
+                    page.locator(SEL_BARIS_OTA).first.wait_for(
+                        state="visible", timeout=2000)
+                except Exception:
+                    time.sleep(0.15)
+                return True
+        except Exception:
+            pass
+        return False
+
+    for sel in ('span.bbRZy[role="button"]', 'span.bbRZy',
+                '[role="button"][data-id="tBvzvc"]'):
+        if _coba_klik(page.locator(sel).first):
+            return True
+    for scope_sel in ('#prices', None):
+        for pola in pola_list:
+            for role in ('button', '[role="button"]', 'a', 'span'):
+                base = page.locator(scope_sel) if scope_sel else page
+                sel = f'{role}:has-text("{pola}")'
+                try:
+                    if _coba_klik(base.locator(sel).first):
+                        return True
+                except Exception:
+                    continue
+    return False
+
+
+def extract_ota_prices(page, nama_hotel: str) -> list[dict]:
+    """Baca semua harga OTA pada halaman detail hotel saat ini."""
+    hasil_gabungan: dict[str, int] = {}
+
+    def _agregasi(pasangan):
+        for p in pasangan or []:
+            ota = str(p.get('sumber') or '').strip()
+            h = int(p.get('harga') or 0)
+            if not ota or h <= 0:
+                continue
+            hasil_gabungan[ota] = min(hasil_gabungan.get(ota, h), h)
+
+    if not _tunggu_hasil_hotel(page):
+        log.debug("[DEBUG] hasil hotel tidak muncul; anggap detail terbuka.")
+        _scroll_di_detail(page)
+        _klik_opsi_lainnya(page)
+        pasangan = _ekstrak_ota_all_options(page, nama_hotel)
+        if not pasangan:
+            pasangan = _parse_ota_dari_teks(_teks_panel_lengkap(page, nama_hotel))
+        _agregasi(pasangan)
+        return [{"sumber": o, "harga": h} for o, h in hasil_gabungan.items()]
+
+    kartu = _pilih_kartu_organik_best_match(page, nama_hotel)
+    if kartu is not None:
+        try:
+            _agregasi(_parse_ota_dari_teks(kartu.inner_text()))
+        except Exception:
+            pass
+        _klik_kartu(page, kartu)
+    _scroll_di_detail(page)
+    _klik_opsi_lainnya(page)
+    pasangan = _ekstrak_ota_all_options(page, nama_hotel)
+    if not pasangan:
+        pasangan = _parse_ota_dari_teks(_teks_panel_lengkap(page, nama_hotel))
+    _agregasi(pasangan)
+    log.info("gmaps harga %s -> %d sumber OTA", nama_hotel, len(hasil_gabungan))
+    return [{"sumber": o, "harga": h} for o, h in hasil_gabungan.items()]
+
+
+# ============================================================
+# PER HOTEL & ORKESTRATOR
+# ============================================================
+
+def _lead_time_dates(cfg: dict, today: date) -> list[dict]:
+    """Skenario tanggal check-in dari config `lead_times` (mis. [1..7, 30, 60])."""
+    daftar = cfg.get("lead_times")
+    if daftar:
+        lead_times = sorted({int(x) for x in daftar})
+    else:
+        min_lt = int(cfg.get("lead_time_min", 1))
+        max_lt = int(cfg.get("lead_time_max", 7))
+        lead_times = list(range(min_lt, max_lt + 1))
+    return [
+        {"lead_time": lt, "checkin": today + timedelta(days=lt),
+         "checkout": today + timedelta(days=lt + 1)}
+        for lt in lead_times
+    ]
+
+
+def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
+    """Ambil harga OTA untuk semua lead time satu hotel. Batas waktu dihormati."""
+    nama = str(hotel.get("nama_hotel") or "").strip()
+    id_komp = str(hotel.get("id_kompetitor") or "").strip()
+    hasil: list[dict] = []
+    if not nama or not id_komp:
+        return hasil
+
+    search_query = build_search_query(
+        nama, hotel.get("alamat"), hotel.get("kota"))
+    today = date.today()
+    skenario = _lead_time_dates(cfg, today)
+    batas_detik = float(cfg.get("batas_detik_per_hotel", 420) or 420)
+    tenggat = time.monotonic() + batas_detik
+
+    page = context.new_page()
+    try:
+        for sk in skenario:
+            if time.monotonic() > tenggat:
+                log.info("  [%s] batas waktu %s dtk tercapai; sisa lead time dilewati",
+                         nama[:40], int(batas_detik))
+                break
+            checkin, checkout = sk["checkin"], sk["checkout"]
+            try:
+                if not open_hotel_search(page, search_query, checkin, checkout):
+                    continue
+                harga_list = extract_ota_prices(page, nama)
+            except Exception as exc:
+                log.warning("  [%s] H-%s gagal: %s", nama[:40], sk["lead_time"], exc)
+                continue
+            for item in harga_list or []:
+                harga = int(item.get("harga") or 0)
+                sumber = str(item.get("sumber") or "").strip()
+                if harga > 0 and sumber:
+                    hasil.append({
+                        "id_kompetitor": id_komp,
+                        "nama_hotel": nama,
+                        "checkin_date": checkin,
+                        "lead_time": sk["lead_time"],
+                        "sumber": sumber,
+                        "harga": harga,
+                        "scrape_date": today,
+                    })
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+    return hasil
+
+
+def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+    """Harga OTA Google Travel semua hotel -> bronze per tahun (append).
+
+    Bronze dipecah per tahun berdasarkan `scrape_date` dengan mode append:
+    run harian berikutnya tidak menimpa harga hari-hari sebelumnya. Lead time
+    yang diambil ditentukan `lead_times` di config; tidak ada penulisan gold.
+    """
+    cfg = get_source_config(SOURCE)
+    tahun = resolve_years(period)
+    hotel_list = daftar_hotel(cfg)
+
+    batas = get_row_limit()
+    if batas is not None:
+        hotel_list = hotel_list[:batas]
+        log.info("%s: mode uji, dibatasi %d hotel pertama", SOURCE, batas)
+
+    if not hotel_list:
+        log.warning("%s: tidak ada hotel di registry (hotel_master)", SOURCE)
+        return {}
+
+    log.info("%s: %d hotel, lead_times=%s",
+             SOURCE, len(hotel_list), [s["lead_time"] for s in _lead_time_dates(cfg, date.today())])
+
+    checkpoint = Checkpoint(SOURCE)
+    if get_resume():
+        sudah = checkpoint.muat()
+        hotel_list = [h for h in hotel_list if not checkpoint.sudah(h.get("id_kompetitor"))]
+        if not hotel_list:
+            log.info("%s: %d hotel sudah diproses hari ini, tidak ada yang diulang",
+                     SOURCE, len(sudah))
+            checkpoint.bersihkan()
+            return {}
+        log.info("%s: melanjutkan, %d hotel tersisa", SOURCE, len(hotel_list))
+    else:
+        checkpoint.bersihkan()
+
+    hasil = jalankan_per_hotel(
+        hotel_list,
+        lambda ctx, h: scrape_hotel_prices(ctx, h, cfg),
+        cfg,
+        "harga_workers",
+        checkpoint=checkpoint,
+    )
+    checkpoint.simpan()
+
+    log.info("%s: %d baris harga dari %d hotel (tahun %s)",
+             SOURCE, len(hasil), len(hotel_list), tahun)
+    if not hasil:
+        return {}
+
+    df = pd.DataFrame(hasil)
+    if dry_run:
+        log.info("[dry-run] %s bronze %s: %d baris (tidak ditulis)",
+                 SOURCE, DATASET, len(df))
+    else:
+        paths = write_parquet_by_year(
+            df,
+            "bronze",
+            SOURCE,
+            DATASET,
+            year_col="scrape_date",
+            mode="append",
+            dedup_cols=["id_kompetitor", "checkin_date", "sumber", "scrape_date"],
+        )
+        log.info("%s bronze ditulis: %d file per tahun (%d baris)",
+                 SOURCE, len(paths), len(df))
+
+    return {DATASET: df}
