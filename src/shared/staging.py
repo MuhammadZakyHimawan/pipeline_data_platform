@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from .config import DATA_LAKE_DIR
-from .row_limit import is_limited
+from .row_limit import is_check
 
 log = logging.getLogger(__name__)
 
@@ -67,11 +67,11 @@ def tulis_part(source: str, label: str, kunci: str, rows: list[dict]) -> Path | 
     tidak pernah punya dua part dan barisnya tidak terduplikasi.
 
     Mengembalikan None kalau memang tidak ada yang perlu ditulis (hotel nol
-    ulasan, atau mode uji `sumber[N]` yang tidak boleh menyentuh disk riil).
+    ulasan, atau mode check `--check` yang tidak boleh menyentuh disk riil).
     Kegagalan tulis sengaja dilempar sebagai exception: pemanggil wajib
     tidak menandai hotel sebagai selesai kalau partnya tidak tersimpan.
     """
-    if is_limited() or not rows:
+    if is_check() or not rows:
         return None
 
     run = path_run(source, label)

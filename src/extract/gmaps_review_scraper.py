@@ -36,11 +36,23 @@ from .gmaps_browser import (
     is_similar,
     jalankan_per_hotel,
     normalize_text,
+    timeout_dari_cfg,
 )
 
 log = logging.getLogger(__name__)
 
 SOURCE = "gmaps_review"
+
+
+def _goto_ms(cfg: dict | None, percobaan: int, total: int) -> int:
+    """Timeout `page.goto` untuk percobaan ke-`percobaan` dari `total`.
+
+    Percobaan pertama pendek (default 2s) karena halaman Maps sering menggantung
+    puluhan detik; percobaan terakhir diberi kelonggaran (default 4s).
+    """
+    cepat = timeout_dari_cfg(cfg, "goto_timeout_ms", 2000)
+    lambat = timeout_dari_cfg(cfg, "goto_timeout_retry_ms", 4000)
+    return lambat if percobaan >= total - 1 else cepat
 DATASET = "review"
 
 # ============================================================
@@ -244,7 +256,8 @@ def _waktu_terakhir(page) -> str:
     return ""
 
 
-def _tunggu_tab_ulasan(page, url_search: str, percobaan: int = 4) -> bool:
+def _tunggu_tab_ulasan(page, url_search: str, percobaan: int = 4,
+                       cfg: dict | None = None) -> bool:
     """Pastikan tab "Ulasan" benar-benar ada, dengan muat ulang bila perlu.
 
     Pemeriksaannya memakai `button[role="tab"]` persis referensi. Selector
@@ -259,7 +272,7 @@ def _tunggu_tab_ulasan(page, url_search: str, percobaan: int = 4) -> bool:
             return True
         log.info("  tab Ulasan belum muncul, muat ulang (%d/%d)", i + 1, percobaan)
         try:
-            page.goto(url_search, timeout=60000)
+            page.goto(url_search, timeout=_goto_ms(cfg, i, percobaan))
         except Exception:
             pass
         time.sleep(4)
@@ -451,7 +464,8 @@ def _judul_place(page) -> str:
     return ""
 
 
-def _cari_place(page, nama_hotel: str, url_search: str) -> dict | None:
+def _cari_place(page, nama_hotel: str, url_search: str,
+                cfg: dict | None = None) -> dict | None:
     """Masuk ke halaman ulasan hotel yang benar lewat feed hasil pencarian.
 
     Deviasi dari referensi: pendaratan langsung dianggap berhasil bila `h1`
@@ -492,28 +506,30 @@ def _cari_place(page, nama_hotel: str, url_search: str) -> dict | None:
         if gagal_klik:
             sudah_dicoba.add(k["href"])
             try:
-                page.goto(url_search, timeout=60000)
+                page.goto(url_search, timeout=_goto_ms(cfg, percobaan, MAX_PERCOBAAN_KANDIDAT))
             except Exception:
                 pass
             time.sleep(3)
             continue
 
         # Jangan terburu-buru menilai gagal: panel place butuh waktu merender
-        # tab dan kartunya.
+        # tab dan kartunya. Timeout render tetap longgar (`wait_load_ms`,
+        # default 8s) karena hanya navigation yang dipendekkan.
+        tunggu_ms = timeout_dari_cfg(cfg, "wait_load_ms", 8000)
         for tunggu, sel in (
             (("domcontentloaded",), None),
             (("h1",), "h1"),
         ):
             try:
                 if sel is None:
-                    page.wait_for_load_state(tunggu[0], timeout=8000)
+                    page.wait_for_load_state(tunggu[0], timeout=tunggu_ms)
                 else:
-                    page.wait_for_selector(sel, timeout=8000)
+                    page.wait_for_selector(sel, timeout=tunggu_ms)
             except Exception:
                 pass
         try:
             page.wait_for_selector(SEL_TAB_ULASAN_LEBAR + ", " + SEL_SECTION_ULASAN,
-                                   timeout=8000)
+                                   timeout=tunggu_ms)
         except Exception:
             pass
         time.sleep(0.5)
@@ -534,7 +550,7 @@ def _cari_place(page, nama_hotel: str, url_search: str) -> dict | None:
         log.info("  [%s] '%s' gagal (judul=%r), kembali ke feed",
                  nama_hotel[:40], k["nama"], judul)
         try:
-            page.goto(url_search, timeout=60000)
+            page.goto(url_search, timeout=_goto_ms(cfg, percobaan, MAX_PERCOBAAN_KANDIDAT))
         except Exception:
             pass
         time.sleep(3)
@@ -677,7 +693,8 @@ def _tutup_halaman(page) -> None:
 
 def _siapkan_halaman_ulasan(context, hotel: dict, url_search: str,
                             nama_hotel: str, percobaan: int = 3,
-                            tenggat: float | None = None):
+                            tenggat: float | None = None,
+                            cfg: dict | None = None):
     """Muat halaman pada varian yang daftar ulasannya bisa dipaginasi.
 
     Google menyajikan dua varian per muat: (a) tab "Ulasan" SUDAH ada saat cek
@@ -695,14 +712,14 @@ def _siapkan_halaman_ulasan(context, hotel: dict, url_search: str,
     Mengembalikan (page, info, jumlah_kartu) atau (None, None, 0).
     """
     cadangan = None
-    for _ in range(percobaan):
+    for urutan in range(percobaan):
         if tenggat is not None and time.monotonic() > tenggat:
             log.info("  [%s] batas waktu per hotel tercapai; berhenti mencoba",
                      nama_hotel[:40])
             break
         page = context.new_page()
         try:
-            page.goto(url_search, timeout=60000)
+            page.goto(url_search, timeout=_goto_ms(cfg, urutan, percobaan))
             time.sleep(4)
             _tutup_cookie(page)
         except Exception:
@@ -717,12 +734,12 @@ def _siapkan_halaman_ulasan(context, hotel: dict, url_search: str,
             cadangan = (page, None)
             continue
 
-        _tunggu_tab_ulasan(page, url_search)
+        _tunggu_tab_ulasan(page, url_search, cfg=cfg)
         if page.locator(SEL_TAB_ULASAN).count() == 0:
             _tutup_halaman(page)
             continue
 
-        info = _cari_place(page, nama_hotel, url_search)
+        info = _cari_place(page, nama_hotel, url_search, cfg)
         if info is None:
             _tutup_halaman(page)
             return None, None, 0
@@ -734,7 +751,7 @@ def _siapkan_halaman_ulasan(context, hotel: dict, url_search: str,
 
     if cadangan is not None:
         page = cadangan[0]
-        info = _cari_place(page, nama_hotel, url_search)
+        info = _cari_place(page, nama_hotel, url_search, cfg)
         if info is None:
             _tutup_halaman(page)
             return None, None, 0
@@ -765,7 +782,7 @@ def scrape_hotel_reviews(context, hotel: dict, cfg: dict, bulan_ini=None) -> lis
     tenggat = time.monotonic() + batas_detik
 
     page, info, jumlah_awal = _siapkan_halaman_ulasan(
-        context, hotel, url_search, nama_hotel, tenggat=tenggat)
+        context, hotel, url_search, nama_hotel, tenggat=tenggat, cfg=cfg)
     if page is None:
         log.info("  [%s] tidak ditemukan hotel dengan ulasan", nama_hotel[:40])
         return hasil

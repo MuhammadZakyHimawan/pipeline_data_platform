@@ -137,23 +137,16 @@ sources:
       - nama: "Raja Ampat"
         kategori: "Destinasi"
 
-  # ---- Gmaps: dua sumber terpisah karena cadence-nya beda -------------
+  # ---- Gmaps: harga (per hari) dan review (per bulan) -------------
   # Nama/koordinat hotel pembanding BUKAN dari file ini: registry hotel dibaca
   # dari database (lihat hotel_master_schema/table di bawah). Tambah hotel di
   # tabel database itu, bukan di sources.yaml.
   #
-  # headless: WAJIB false untuk kedua sumber. Google Maps tidak merender tab
-  # "Ulasan" maupun daftar ulasan di Chromium headless; panel place hanya
-  # muncul sebagai "Ringkasan / Harga / Tentang" sehingga hasil scrape selalu
-  # 0 baris. Sudah diverifikasi dengan hotel yang jelas berulasan ribuan.
-  # Node headful juga tidak seburuk itu: 1 worker = 1 proses Chromium, jadi
-  # 5 worker = 5 jendela browser.
+  # headless: true (server/CI mode). Jika hasil 0 baris, kembalikan ke false.
 
-  gmaps_harga:
-    # Nonaktif sementara: modul gmaps_harga_* belum ada, gmaps_review dulu yang
-    # diverifikasi. Nyalakan lagi setelah src/extract/gmaps_harga_scraper.py ada.
+  gmaps:
     enabled: false
-    headless: false
+    headless: true
     grain: year
     playwright_required: true
     hotel_master_schema: "public"
@@ -166,6 +159,14 @@ sources:
     harga_workers: 5
     blokir_gambar: true
     batas_detik_per_hotel: 420
+    # Timeout navigation Google Travel (dalam ms). Halaman travel berat dan
+    # `Page.goto` sering menggantung >30s, sehingga run lama hanya berisi
+    # log timeout. Percobaan pertama sengaja pendek; percobaan terakhir
+    # (posisi paling akhir) diberi kelonggaran agar tidak kehilangan semua
+    # data saat Google sedang lambat.
+    goto_timeout_ms: 2000
+    goto_timeout_retry_ms: 4000
+    wait_load_ms: 2000
 
   gmaps_review:
     # enabled: false = tidak ikut "jalan semua"; dipanggil manual per bulan
@@ -182,6 +183,12 @@ sources:
     # Batas waktu per hotel supaya satu hotel yang macet tidak menahan run
     # bulanan selama berjam-jam.
     batas_detik_per_hotel: 90
+    # Timeout navigation Maps (ms): coba 2s, percobaan terakhir 4s.
+    goto_timeout_ms: 2000
+    goto_timeout_retry_ms: 4000
+    # Menunggu render tetap 8s (bukan 2s): daftar ulasan dimuat bertahap dan
+    # butuh waktu, memotongnya membuat jumlah ulasan per hotel turun.
+    wait_load_ms: 8000
 
   transport:
     enabled: true

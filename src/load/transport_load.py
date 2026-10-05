@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..shared.config import get_db_config, get_source_config
 from ..shared.db import db_connection, upsert_df
-from ..shared.row_limit import is_limited
+from ..shared.row_limit import is_check
 from ..shared.storage import read_parquet
 
 log = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
             )
         return frames
 
-    if is_limited():
+    if is_check():
         for dataset, table, _ in TABLES:
             log.info("%d data %s berhasil didapatkan", len(frames[dataset]), dataset)
         return frames

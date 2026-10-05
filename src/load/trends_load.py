@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..shared.config import get_db_config, get_source_config
 from ..shared.db import upsert_df
-from ..shared.row_limit import is_limited
+from ..shared.row_limit import is_check
 from ..shared.storage import read_parquet
 
 log = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
         log.info("[dry-run] trends -> %s.%s (%d baris, tidak dimuat)", schema, TABLE, len(df))
         return {"search_intent": df}
 
-    if is_limited():
+    if is_check():
         log.info("%d data %s berhasil didapatkan", len(df), SOURCE)
     else:
         upsert_df(df, schema=schema, table=TABLE, conflict_keys=CONFLICT_KEYS)

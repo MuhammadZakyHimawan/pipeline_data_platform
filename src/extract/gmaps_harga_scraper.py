@@ -28,7 +28,7 @@ from ..shared.checkpoint import Checkpoint
 from ..shared.config import get_source_config
 from ..shared.hotel_master import daftar_hotel
 from ..shared.periods import resolve_years
-from ..shared.row_limit import get_row_limit
+from ..shared.row_limit import get_row_limit, is_limited, is_check
 from ..shared.run_options import get_resume
 from ..shared.storage import write_parquet_by_year
 from .gmaps_browser import (
@@ -37,11 +37,12 @@ from .gmaps_browser import (
     is_similar,
     jalankan_per_hotel,
     normalize_text,
+    timeout_dari_cfg,
 )
 
 log = logging.getLogger(__name__)
 
-SOURCE = "gmaps_harga"
+SOURCE = "gmaps"
 DATASET = "harga"
 
 NAMA_BULAN = {
@@ -336,14 +337,29 @@ def dates_are_set(page, checkin: date, checkout: date) -> bool:
     return _cocok(teks_ci, checkin) and _cocok(teks_co, checkout)
 
 
-def open_hotel_search(page, search_query: str, checkin: date, checkout: date) -> bool:
-    """Buka Google Travel untuk satu skenario tanggal."""
+def open_hotel_search(page, search_query: str, checkin: date, checkout: date,
+                      cfg: dict | None = None) -> bool:
+    """Buka Google Travel untuk satu skenario tanggal.
+
+    Timeout `goto` dua tingkat dari config: percobaan pertama `goto_timeout_ms`
+    (default 2s), percobaan kedua `goto_timeout_retry_ms` (default 4s). Halaman
+    travel berat sehingga `goto` yang lama hanya menghasilkan log timeout tanpa
+    memblokir progres run.
+    """
     url = build_hotels_url(search_query, checkin, checkout)
     ts_val = url.split("ts=", 1)[1].split("&", 1)[0]
-    for _ in range(2):
-        page.goto(url, timeout=30000)
+    cepat_ms = timeout_dari_cfg(cfg, "goto_timeout_ms", 2000)
+    lambat_ms = timeout_dari_cfg(cfg, "goto_timeout_retry_ms", 4000)
+    tunggu_ms = timeout_dari_cfg(cfg, "wait_load_ms", 2000)
+    for percobaan, batas_ms in enumerate((cepat_ms, lambat_ms)):
         try:
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            page.goto(url, timeout=batas_ms)
+        except Exception as exc:
+            log.debug("[DEBUG] goto %s gagal (timeout %dms): %s",
+                      type(exc).__name__, batas_ms, exc)
+            continue
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=tunggu_ms)
         except Exception:
             time.sleep(0.75)
         from .gmaps_browser import bypass_cookie
@@ -362,7 +378,7 @@ def open_hotel_search(page, search_query: str, checkin: date, checkout: date) ->
 # EKSTRAKSI HARGA OTA
 # ============================================================
 
-def _tunggu_hasil_hotel(page, timeout_ms: int = 8000) -> bool:
+def _tunggu_hasil_hotel(page, timeout_ms: int = 2000) -> bool:
     for sel in ('div.uaTTDe',
                 'a[href^="https://www.google.com/travel/hotels/"]'):
         try:
@@ -541,7 +557,7 @@ def _klik_kartu(page, kartu) -> bool:
             return False
     try:
         page.locator('#prices, div[role="dialog"]').first.wait_for(
-            state="attached", timeout=4000)
+            state="attached", timeout=2000)
     except Exception:
         time.sleep(0.4)
     return True
@@ -658,7 +674,7 @@ def _klik_opsi_lainnya(page) -> bool:
     return False
 
 
-def extract_ota_prices(page, nama_hotel: str) -> list[dict]:
+def extract_ota_prices(page, nama_hotel: str, cfg: dict | None = None) -> list[dict]:
     """Baca semua harga OTA pada halaman detail hotel saat ini."""
     hasil_gabungan: dict[str, int] = {}
 
@@ -670,7 +686,7 @@ def extract_ota_prices(page, nama_hotel: str) -> list[dict]:
                 continue
             hasil_gabungan[ota] = min(hasil_gabungan.get(ota, h), h)
 
-    if not _tunggu_hasil_hotel(page):
+    if not _tunggu_hasil_hotel(page, timeout_dari_cfg(cfg, "wait_load_ms", 2000)):
         log.debug("[DEBUG] hasil hotel tidak muncul; anggap detail terbuka.")
         _scroll_di_detail(page)
         _klik_opsi_lainnya(page)
@@ -741,9 +757,9 @@ def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
                 break
             checkin, checkout = sk["checkin"], sk["checkout"]
             try:
-                if not open_hotel_search(page, search_query, checkin, checkout):
+                if not open_hotel_search(page, search_query, checkin, checkout, cfg):
                     continue
-                harga_list = extract_ota_prices(page, nama)
+                harga_list = extract_ota_prices(page, nama, cfg)
             except Exception as exc:
                 log.warning("  [%s] H-%s gagal: %s", nama[:40], sk["lead_time"], exc)
                 continue
@@ -822,6 +838,10 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
     if dry_run:
         log.info("[dry-run] %s bronze %s: %d baris (tidak ditulis)",
                  SOURCE, DATASET, len(df))
+    elif is_check():
+        # Mode check tidak boleh menyentuh parquet riil; laporkan apa adanya
+        # supaya "OK + ditulis" tidak terbaca padahal nol byte tersimpan.
+        log.info("%s: %d baris (mode check: bronze TIDAK ditulis)", SOURCE, len(df))
     else:
         paths = write_parquet_by_year(
             df,

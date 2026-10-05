@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..shared.config import get_db_config
 from ..shared.db import db_connection, upsert_df
-from ..shared.row_limit import is_limited
+from ..shared.row_limit import is_check
 from ..shared.storage import read_parquet
 
 log = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
         log.info("[dry-run] poi -> %s.%s (%d baris, tidak dimuat)", schema, TABLE, len(df))
         return {"poi": df}
 
-    if is_limited():
+    if is_check():
         log.info("%d data %s berhasil didapatkan", len(df), SOURCE)
         return {"poi": df}
 

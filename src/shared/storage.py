@@ -8,7 +8,7 @@ from typing import Callable
 import pandas as pd
 
 from .config import DATA_LAKE_DIR
-from .row_limit import is_limited
+from .row_limit import is_check
 
 log = logging.getLogger(__name__)
 
@@ -23,17 +23,33 @@ def _dataset_dir(layer: str, source: str, dataset: str) -> Path:
     return DATA_LAKE_DIR / layer / source / dataset
 
 
-def _tulis(path: Path, df: pd.DataFrame) -> Path:
-    if is_limited():
+def _hitung_rows(path: Path) -> int:
+    """Hitung jumlah baris file parquet; 0 jika tidak ada/error."""
+    try:
+        if path.exists():
+            return len(pd.read_parquet(path))
+    except Exception:
+        pass
+    return 0
+
+
+def _tulis(path: Path, df: pd.DataFrame) -> tuple[Path, bool]:
+    """Tulis DataFrame ke `path`; kembalikan (path, benar_ditulis).
+
+    Status kedua penting: mode uji sengaja tidak menyentuh disk, jadi pemanggil
+    perlu bisa membedakan "file ditulis" dari "file dilewati" supaya laporan run
+    tidak menyatakan berhasil menulis padahal nol byte tersimpan.
+    """
+    if is_check():
         log.warning(
-            "mode uji aktif: TIDAK menulis %s (data riil dilindungi dari penimpaan mode uji)",
+            "mode check aktif: TIDAK menulis %s (--check menahan penulisan)",
             path.name,
         )
-        return path
+        return path, False
+
+    rows_sebelum = _hitung_rows(path)
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Tulis ke file sementara lalu pakai replace: file bronze yang terpotong
-    # karena run kill di tengah tulis akan menggagalkan seluruh pembacaan
-    # periode berikutnya, dan parquet lama tidak bisa dipertahankan.
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         df.to_parquet(tmp, index=False)
@@ -41,7 +57,19 @@ def _tulis(path: Path, df: pd.DataFrame) -> Path:
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
-    return path
+
+    rows_sesudah = _hitung_rows(path)
+    diff = rows_sesudah - rows_sebelum
+    tanda = "+" if diff >= 0 else ""
+    log.info(
+        "%s: %d → %d baris (%s%d)",
+        path.relative_to(DATA_LAKE_DIR),
+        rows_sebelum,
+        rows_sesudah,
+        tanda,
+        diff,
+    )
+    return path, True
 
 
 def _cari_kolom_tahun(df: pd.DataFrame, year_col: str | None) -> str | None:
@@ -74,7 +102,7 @@ def write_parquet(
     if df is None or df.empty:
         raise ValueError(f"tidak ada data untuk ditulis: {layer}/{source}/{dataset}/{period}")
     path = _dataset_dir(layer, source, dataset) / f"{period}.parquet"
-    return _tulis(path, df)
+    return _tulis(path, df)[0]
 
 
 def write_parquet_by_year(
@@ -120,6 +148,8 @@ def write_parquet_by_year(
         )
 
     paths: list[Path] = []
+    n_ditulis = 0
+    n_dilewati = 0
     d = _dataset_dir(layer, source, dataset)
     for y in sorted(tahun.dropna().unique().tolist()):
         bagian = df[tahun == y]
@@ -133,13 +163,26 @@ def write_parquet_by_year(
             kunci = [k for k in kunci if k in bagian.columns]
             if kunci:
                 bagian = bagian.drop_duplicates(subset=kunci, keep="last")
-        paths.append(_tulis(path, bagian))
+        hasil_tulis = _tulis(path, bagian)
+        paths.append(hasil_tulis[0])
+        if hasil_tulis[1]:
+            n_ditulis += 1
+        else:
+            n_dilewati += 1
 
+    # Laporan dipisah "ditulis" vs "dilewati": pada mode uji semua file dilewati,
+    # jadi kalimat "ditulis" saja menyesatkan.
+    catatan = ""
+    if n_dilewati and n_ditulis:
+        catatan = f" ({n_ditulis} ditulis, {n_dilewati} dilewati)"
+    elif n_dilewati:
+        catatan = f" ({n_ditulis} ditulis, {n_dilewati} dilewati mode check)"
     log.info(
-        "%s/%s: %d file per tahun ditulis (%s..%s)",
+        "%s/%s: %d file per tahun%s (%s..%s)",
         layer,
         source,
         len(paths),
+        catatan,
         paths[0].stem if paths else "-",
         paths[-1].stem if paths else "-",
     )
@@ -156,7 +199,7 @@ def write_parquet_snapshot(
     if df is None or df.empty:
         raise ValueError(f"tidak ada data untuk ditulis: {layer}/{source}/{dataset}/{DATA_LABEL}")
     path = _dataset_dir(layer, source, dataset) / f"{DATA_LABEL}.parquet"
-    return _tulis(path, df)
+    return _tulis(path, df)[0]
 
 
 def read_parquet(

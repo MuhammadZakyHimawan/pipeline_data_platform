@@ -11,7 +11,7 @@ from typing import Any
 from .pipeline import get_stage_path, run_stage
 from .shared.live_view import RencanaBaris, TampilanPipeline, dukung_live
 from .shared.logging_utils import setup_logging
-from .shared.row_limit import set_row_limit
+from .shared.row_limit import is_limited, is_check, set_row_limit
 from .shared.run_options import get_dry_run, set_dry_run
 
 _ANTRIAN: multiprocessing.Queue | None = None
@@ -44,6 +44,7 @@ def _init_worker(
     limit: int | None,
     antre_log: bool,
     dry_run: bool = False,
+    check: bool = False,
 ) -> None:
     """Initializer tiap proses worker: simpan antrian, siapkan logging, limit & dry-run."""
     global _ANTRIAN
@@ -55,6 +56,8 @@ def _init_worker(
         set_row_limit(limit)
     if dry_run:
         set_dry_run(True)
+    if check:
+        set_check(True)
 
 
 def _pasang_antrean_log(antrian: multiprocessing.Queue) -> None:
@@ -89,6 +92,10 @@ def jalankan_sumber(sumber: str, stages: tuple[str, ...] | None = None) -> dict[
             n_baris = sum(len(v) for v in result.values())
             detik = round(time.time() - mulai, 1)
             info = f"{n_dataset} dataset {n_baris} baris"
+            # Tandai mode check: pada mode ini extract tidak menulis parquet, jadi
+            # "OK" tanpa catatan bisa disalahbaca sebagai data tersimpan.
+            if is_check():
+                info += " (mode check, tidak ditulis)"
             _kirim((sumber, stage.upper(), "selesai", info, detik))
         except Exception as exc:
             detik = round(time.time() - mulai, 1)
@@ -165,25 +172,31 @@ def jalankan_paralel(
     limit: int | None = None,
     stages: tuple[str, ...] | None = None,
     dry_run: bool = False,
+    check: bool = False,
 ) -> dict:
     """Jalankan semua sumber aktif secara paralel dengan tampilan live in-place.
 
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
     dry_run -> hanya baca & laporkan, tanpa menulis file/DB.
+    check -> jalankan penuh tapi jangan tulis file/DB.
     """
     stages = stages or STAGES
     if dry_run:
         set_dry_run(True)
+    if check:
+        set_check(True)
     antrian: multiprocessing.Queue = multiprocessing.Queue()
     per_sumber: dict = {s: {"status": "?", "stages": {}} for s in sumber_aktif}
     berhenti = threading.Event()
 
     tampilan = _buat_tampilan_paralel(sumber_aktif, stages)
-    catatan_uji = None
-    if limit is not None:
-        catatan_uji = f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)"
-    catatan_dry_run = "  (dry-run: tidak ada file/DB yang ditulis)" if dry_run else None
-    catatan = [c for c in (catatan_uji, catatan_dry_run) if c]
+    catatan: list[str] = []
+    if is_limited():
+        catatan.append(f"  (mode uji: maks {limit} baris per dataset)")
+    if is_check():
+        catatan.append("  (mode check: tidak ada file/DB yang ditulis)")
+    if dry_run:
+        catatan.append("  (dry-run: tidak ada file/DB yang ditulis)")
 
     if tampilan is not None:
         for c in catatan:
@@ -203,7 +216,7 @@ def jalankan_paralel(
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker,
-            initargs=(antrian, limit, antre_log, dry_run),
+            initargs=(antrian, limit, antre_log, dry_run, check),
         ) as executor:
             futures = [executor.submit(jalankan_sumber, s, stages) for s in sumber_aktif]
             for f in futures:

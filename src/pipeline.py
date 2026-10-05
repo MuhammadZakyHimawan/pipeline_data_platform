@@ -55,7 +55,7 @@ _PIPES: dict[str, dict] = {
         "transform": "src.transform.trends_transform",
         "load": "src.load.trends_load",
     },
-    "gmaps_harga": {
+    "gmaps": {
         "extract": "src.extract.gmaps_harga_scraper",
         "transform": "src.transform.gmaps_harga_transform",
         "load": "src.load.gmaps_harga_load",

@@ -16,7 +16,7 @@ from ..shared.storage import list_periods, read_parquet
 
 log = logging.getLogger(__name__)
 
-SOURCE = "gmaps_harga"
+SOURCE = "gmaps"
 DATASET = "harga"
 
 
@@ -28,7 +28,7 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
         else list_periods("silver", SOURCE, DATASET)
     )
     if not years:
-        log.warning("gmaps_harga: tidak ada file silver untuk diperiksa")
+        log.warning("gmaps: tidak ada file silver untuk diperiksa")
         return {}
 
     frames: list[pd.DataFrame] = []
@@ -36,13 +36,13 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
         try:
             df = read_parquet("silver", SOURCE, DATASET, y)
         except FileNotFoundError:
-            log.warning("gmaps_harga: silver tidak ditemukan untuk periode %s", y)
+            log.warning("gmaps: silver tidak ditemukan untuk periode %s", y)
             continue
         if df.empty:
             continue
         hotel = df["id_kompetitor"].nunique() if "id_kompetitor" in df else 0
         sumber = df["sumber"].nunique() if "sumber" in df else 0
-        log.info("gmaps_harga %s siap dipakai: %d harga dari %d hotel / %d OTA "
+        log.info("gmaps %s siap dipakai: %d harga dari %d hotel / %d OTA "
                  "(tidak dimuat ke gold)", y, len(df), hotel, sumber)
         frames.append(df)
 

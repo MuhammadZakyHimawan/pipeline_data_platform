@@ -589,18 +589,27 @@ def page_crash(exc: Exception) -> bool:
     ))
 
 
-def goto_robust(context, url: str, tries: int = 3, timeout: int = 45000):
+def goto_robust(context, url: str, tries: int = 3,
+                goto_timeout_ms: int = 2000, goto_timeout_retry_ms: int = 4000):
     """Buka `url` dan kembalikan page yang masih hidup.
 
     Page crash tidak bisa di-recover, jadi page dibuat ulang dari context yang
     sama. Error non-crash cukup dicoba ulang di page yang sama.
+
+    Timeout navigation dibuat dua tingkat: percobaan pertama `goto_timeout_ms`
+    (default 2s) karena halaman Maps/Travel berat dan `goto` bisa menggantung
+    puluhan detik; percobaan terakhir memakai `goto_timeout_retry_ms`
+    (default 4s) sebagai kelonggaran agar tidak kehilangan semua data ketika
+    Google sedang lambat.
     """
     percobaan = 0
-    while percobaan < max(1, tries):
+    n = max(1, tries)
+    while percobaan < n:
         percobaan += 1
+        batas_ms = goto_timeout_retry_ms if percobaan == n else goto_timeout_ms
         page = context.new_page()
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            page.goto(url, wait_until="domcontentloaded", timeout=batas_ms)
             bypass_cookie(page)
             return page
         except Exception as exc:
@@ -608,9 +617,18 @@ def goto_robust(context, url: str, tries: int = 3, timeout: int = 45000):
                 page.close()
             except Exception:
                 pass
-            log.debug("goto percobaan %d/%d gagal (%s): %s",
-                      percobaan, tries, type(exc).__name__, exc)
-            if percobaan >= tries:
+            log.debug("goto percobaan %d/%d gagal (%s: %s)",
+                      percobaan, n, type(exc).__name__, exc)
+            if percobaan >= n:
                 raise
             time.sleep(1.5 * percobaan)
     raise RuntimeError(f"tidak bisa membuka {url}")
+
+
+def timeout_dari_cfg(cfg: dict | None, kunci: str, default: int) -> int:
+    """Ambil timeout (ms) dari config sumber, jatuh ke `default` bila invalid."""
+    try:
+        nilai = int((cfg or {}).get(kunci))
+    except (TypeError, ValueError):
+        return default
+    return nilai if nilai > 0 else default

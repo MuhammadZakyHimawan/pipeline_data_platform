@@ -17,7 +17,7 @@ from ..shared.storage import list_periods, read_parquet, write_parquet
 
 log = logging.getLogger(__name__)
 
-SOURCE = "gmaps_harga"
+SOURCE = "gmaps"
 DATASET = "harga"
 
 KOLOM_SILVER = [
@@ -76,7 +76,7 @@ def transform(period: str | None = None, dry_run: bool = False) -> dict[str, pd.
         else list_periods("bronze", SOURCE, DATASET)
     )
     if not years:
-        log.warning("gmaps_harga: tidak ada file bronze untuk diproses")
+        log.warning("gmaps: tidak ada file bronze untuk diproses")
         return {}
 
     frames: list[pd.DataFrame] = []
@@ -84,17 +84,17 @@ def transform(period: str | None = None, dry_run: bool = False) -> dict[str, pd.
         try:
             bronze = read_parquet("bronze", SOURCE, DATASET, y)
         except FileNotFoundError:
-            log.warning("gmaps_harga: bronze tidak ditemukan untuk periode %s", y)
+            log.warning("gmaps: bronze tidak ditemukan untuk periode %s", y)
             continue
         df = _bersihkan_harga(bronze)
         if df.empty:
-            log.info("gmaps_harga silver %s: tidak ada harga valid", y)
+            log.info("gmaps silver %s: tidak ada harga valid", y)
             continue
         if dry_run:
-            log.info("[dry-run] gmaps_harga silver %s: %d baris (tidak ditulis)", y, len(df))
+            log.info("[dry-run] gmaps silver %s: %d baris (tidak ditulis)", y, len(df))
         else:
             path = write_parquet(df, "silver", SOURCE, DATASET, y)
-            log.info("gmaps_harga silver ditulis: %s (%d baris)", path, len(df))
+            log.info("gmaps silver ditulis: %s (%d baris)", path, len(df))
         frames.append(df)
 
     if not frames:

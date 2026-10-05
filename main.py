@@ -23,7 +23,7 @@ from src.shared.live_view import (
     pasang_tampilan_log,
 )
 from src.shared.logging_utils import setup_logging
-from src.shared.row_limit import get_row_limit, set_row_limit
+from src.shared.row_limit import get_row_limit, is_limited, is_check, set_row_limit, set_check, set_test
 from src.shared.run_options import (
     set_dry_run,
     set_headful,
@@ -135,7 +135,7 @@ ORDERSUMBER = [
     "poi",
     "trends",
     "transport",
-    "gmaps_harga",
+    "gmaps",
     "gmaps_review",
 ]
 
@@ -168,6 +168,8 @@ class OpsiCLI:
         self.dry_run: bool = False
         self.headful: bool = False
         self.resume: bool = False
+        self.test: bool = False
+        self.check: bool = False
 
     @property
     def pakai_pintasan(self) -> bool:
@@ -177,6 +179,8 @@ class OpsiCLI:
             or self.dry_run
             or self.headful
             or self.resume
+            or self.test
+            or self.check
         )
 
 
@@ -185,6 +189,8 @@ _UJI_FLAG = {
     "--dry-run": "dry_run",
     "--headful": "headful",
     "--lanjut": "resume",
+    "--test": "test",
+    "--check": "check",
 }
 
 
@@ -198,6 +204,8 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
       --dry-run       -> jalankan tanpa menulis file/DB
       --headful       -> tampilkan browser (debug selector)
       --lanjut        -> lanjutkan dari checkpoint
+      --test          -> batasi 3 unit, tetap tulis output
+      --check         -> jalankan penuh, JANGAN tulis file/DB
 
     Tanpa flag yang dikenali, `sisa` dikembalikan utuh dan stages=None sehingga
     jalur typer serta pintasan lama (positional) tidak berubah.
@@ -325,8 +333,10 @@ def _run_sources(
     ]
     tampilan = TampilanPipeline(rencana) if dukung_live() else None
     catatan: list[str] = []
-    if limit is not None:
-        catatan.append(f"  (mode uji: maks {limit} baris per dataset; LOAD tidak menulis ke database)")
+    if is_limited():
+        catatan.append(f"  (mode uji: maks {limit} baris per dataset)")
+    if is_check():
+        catatan.append("  (mode check: tidak ada file/DB yang ditulis)")
     if dry_run:
         catatan.append("  (dry-run: tidak ada file/DB yang ditulis)")
     if tampilan is not None:
@@ -347,6 +357,8 @@ def _run_sources(
                 result = run_stage(sumber, stage, dry_run=dry_run)
                 status = "ok"
                 info = f"{sum(len(v) for v in result.values())} baris"
+                if is_check():
+                    info += " (mode check, tidak ditulis)"
             except Exception as exc:
                 status = "gagal"
                 info = f"{type(exc).__name__}: {exc}"
@@ -396,6 +408,7 @@ def run_all(stages: Optional[tuple[str, ...]] = None, dry_run: bool = False) -> 
         limit=get_row_limit(),
         stages=stages,
         dry_run=dry_run,
+        check=is_check(),
     )
     cetak_ringkasan(per, skips, stages=stages)
 
@@ -428,6 +441,10 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     set_dry_run(opsi.dry_run)
     set_headful(opsi.headful)
     set_resume(opsi.resume)
+    if opsi.test:
+        set_test()
+    if opsi.check:
+        set_check(True)
     if not opsi.sisa:
         if opsi.sumber is None:
             set_row_limit(None)
