@@ -10,6 +10,7 @@ import requests
 
 from ..shared.config import get_bps_api_key, get_source_config
 from ..shared.periods import resolve_years
+from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
 
 log = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ def extract_dataset(
                 }
             ]
         )
+        baris = truncate_df(baris)
         rows[year] = baris
 
         if boleh_tulis:

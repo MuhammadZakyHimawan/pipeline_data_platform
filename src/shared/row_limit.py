@@ -26,14 +26,13 @@ def get_row_limit() -> int | None:
 
 
 def set_check(nilai: bool) -> None:
-    """Aktifkan mode check: jalankan penuh tapi jangan menulis file/DB apa pun."""
-    global _check
-    _check = bool(nilai)
+    """Legacy stub: mode check dihapus. No-op untuk kompatibilitas mundur."""
+    pass
 
 
 def is_check() -> bool:
-    """True bila mode check aktif: semua penulisan disk dan DB dilewati."""
-    return _check
+    """Legacy stub: mode check dihapus. Selalu False."""
+    return False
 
 
 def is_limited() -> bool:

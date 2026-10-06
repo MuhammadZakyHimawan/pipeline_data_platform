@@ -169,7 +169,6 @@ class OpsiCLI:
         self.headful: bool = False
         self.resume: bool = False
         self.test: bool = False
-        self.check: bool = False
 
     @property
     def pakai_pintasan(self) -> bool:
@@ -180,7 +179,6 @@ class OpsiCLI:
             or self.headful
             or self.resume
             or self.test
-            or self.check
         )
 
 
@@ -190,7 +188,6 @@ _UJI_FLAG = {
     "--headful": "headful",
     "--lanjut": "resume",
     "--test": "test",
-    "--check": "check",
 }
 
 
@@ -204,8 +201,7 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
       --dry-run       -> jalankan tanpa menulis file/DB
       --headful       -> tampilkan browser (debug selector)
       --lanjut        -> lanjutkan dari checkpoint
-      --test          -> batasi 3 unit, tetap tulis output
-      --check         -> jalankan penuh, JANGAN tulis file/DB
+      --test          -> batasi 3 baris per dataset per tahun, tetap simpan ke parquet
 
     Tanpa flag yang dikenali, `sisa` dikembalikan utuh dan stages=None sehingga
     jalur typer serta pintasan lama (positional) tidak berubah.
@@ -408,7 +404,6 @@ def run_all(stages: Optional[tuple[str, ...]] = None, dry_run: bool = False) -> 
         limit=get_row_limit(),
         stages=stages,
         dry_run=dry_run,
-        check=is_check(),
     )
     cetak_ringkasan(per, skips, stages=stages)
 
@@ -443,11 +438,10 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     set_resume(opsi.resume)
     if opsi.test:
         set_test()
-    if opsi.check:
-        set_check(True)
     if not opsi.sisa:
         if opsi.sumber is None:
-            set_row_limit(None)
+            if not opsi.test:
+                set_row_limit(None)
             run_all(opsi.stages, dry_run=opsi.dry_run)
         else:
             run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run)
@@ -474,7 +468,8 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
         raise SystemExit(1)
     if opsi.sumber is not None:
         target = opsi.sumber
-    set_row_limit(limit)
+    if limit is not None:
+        set_row_limit(limit)
     if target is None:
         run_all(opsi.stages, dry_run=opsi.dry_run)
     else:
@@ -489,7 +484,8 @@ def main() -> None:
     pintasan = _parse_shortcut(sys.argv[1:])
     if pintasan is not None:
         target, limit = pintasan
-        set_row_limit(limit)
+        if limit is not None:
+            set_row_limit(limit)
         if target is None:
             run_all()
         else:

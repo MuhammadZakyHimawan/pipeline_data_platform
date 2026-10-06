@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 from ..shared.config import get_source_config
-from ..shared.row_limit import get_row_limit
+from ..shared.row_limit import get_row_limit, truncate_df
 from ..shared.storage import DATA_LABEL, read_parquet, write_parquet_snapshot
 
 log = logging.getLogger(__name__)
@@ -332,6 +332,7 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
     rows_final = rows if dry_run else _gabung_dengan_bronze_sebelumnya(rows)
     df = pd.DataFrame(rows_final)
     df["tanggal_tarik"] = pd.Timestamp.now().date().isoformat()
+    df = truncate_df(df)
 
     if dry_run:
         log.info("[dry-run] poi bronze: %d baris (tidak ditulis)", len(df))

@@ -763,7 +763,13 @@ def _siapkan_halaman_ulasan(context, hotel: dict, url_search: str,
 def scrape_hotel_reviews(context, hotel: dict, cfg: dict, bulan_ini=None) -> list[dict]:
     """Mendarat di koordinat hotel, buka panel ulasan, urutkan terbaru, ekstrak."""
     nama_hotel = hotel.get("nama_hotel") or ""
-    maks_ulasan = int(cfg.get("max_reviews_per_hotel", 200) or 200)
+    # Mode test (--test): batasi ulasan per hotel ke row_limit (default 3)
+    batas_uji = get_row_limit()
+    if batas_uji is not None:
+        maks_ulasan = batas_uji
+        log.info("  [%s] mode uji: batas ulasan per hotel = %d", nama_hotel[:40], maks_ulasan)
+    else:
+        maks_ulasan = int(cfg.get("max_reviews_per_hotel", 200) or 200)
     tahun_target = _tahun_dari_bulan(bulan_ini)
     hasil: list[dict] = []
 

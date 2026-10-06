@@ -7,7 +7,6 @@ import pandas as pd
 from ..shared.config import get_db_config
 from ..shared.db import upsert_df
 from ..shared.periods import resolve_years
-from ..shared.row_limit import is_check
 from ..shared.storage import list_periods, read_parquet
 
 log = logging.getLogger(__name__)
@@ -45,12 +44,9 @@ def load_dataset(dataset: str, period_label: str, dry_run: bool = False) -> pd.D
                  dataset, schema, spec["table"], len(df))
         return df
 
-    if is_check():
-        log.info("%d data %s berhasil didapatkan", len(df), dataset)
-    else:
-        upsert_df(df, schema=schema, table=spec["table"], conflict_keys=spec["conflict_keys"])
-        log.info("%d data %s berhasil dimasukkan ke database dalam tabel %s.%s",
-                 len(df), dataset, schema, spec["table"])
+    upsert_df(df, schema=schema, table=spec["table"], conflict_keys=spec["conflict_keys"])
+    log.info("%d data %s berhasil dimasukkan ke database dalam tabel %s.%s",
+             len(df), dataset, schema, spec["table"])
     return df
 
 

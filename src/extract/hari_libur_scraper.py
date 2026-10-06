@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 
 from ..shared.periods import resolve_years
+from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
 
     df = pd.DataFrame(events)
     df["tanggal"] = pd.to_datetime(df["tanggal"])
+    df = truncate_df(df)
 
     if dry_run:
         log.info("[dry-run] hari_libur bronze: %d event (tidak ditulis)", len(df))

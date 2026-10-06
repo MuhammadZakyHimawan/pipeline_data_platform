@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..shared.config import get_source_config
+from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
 
 log = logging.getLogger(__name__)
@@ -751,6 +752,7 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
         return {}
 
     df = pd.DataFrame(daftar_event, columns=KOLOM_BRONZE)
+    df = truncate_df(df)
     if dry_run:
         log.info("[dry-run] event bronze: %d baris (tidak ditulis)", len(df))
         return {"events": df}

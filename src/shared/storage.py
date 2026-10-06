@@ -8,7 +8,6 @@ from typing import Callable
 import pandas as pd
 
 from .config import DATA_LAKE_DIR
-from .row_limit import is_check
 
 log = logging.getLogger(__name__)
 
@@ -40,13 +39,6 @@ def _tulis(path: Path, df: pd.DataFrame) -> tuple[Path, bool]:
     perlu bisa membedakan "file ditulis" dari "file dilewati" supaya laporan run
     tidak menyatakan berhasil menulis padahal nol byte tersimpan.
     """
-    if is_check():
-        log.warning(
-            "mode check aktif: TIDAK menulis %s (--check menahan penulisan)",
-            path.name,
-        )
-        return path, False
-
     rows_sebelum = _hitung_rows(path)
 
     path.parent.mkdir(parents=True, exist_ok=True)

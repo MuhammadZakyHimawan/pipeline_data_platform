@@ -8,7 +8,7 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 
 from ..shared.config import get_source_config
-from ..shared.row_limit import get_row_limit
+from ..shared.row_limit import get_row_limit, truncate_df
 from ..shared.storage import write_parquet_snapshot
 
 log = logging.getLogger(__name__)
@@ -188,6 +188,7 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
         return {}
 
     df = pd.DataFrame(rows, columns=KOLOM_BRONZE)
+    df = truncate_df(df)
     if dry_run:
         log.info("[dry-run] transport bronze: %d baris (tidak ditulis)", len(df))
         return {"rute": df}

@@ -11,7 +11,7 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 
 from ..shared.config import get_source_config
-from ..shared.row_limit import get_row_limit
+from ..shared.row_limit import get_row_limit, truncate_df
 from ..shared.storage import write_parquet_by_year
 
 log = logging.getLogger(__name__)
@@ -274,6 +274,7 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
         return {}
 
     df = pd.DataFrame(semua, columns=KOLOM_BRONZE)
+    df = truncate_df(df)
     if dry_run:
         log.info("[dry-run] trends bronze: %d baris (tidak ditulis)", len(df))
         return {"search_intent": df}

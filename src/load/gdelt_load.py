@@ -7,7 +7,6 @@ import pandas as pd
 
 from ..shared.config import get_db_config, get_source_config
 from ..shared.db import upsert_df
-from ..shared.row_limit import is_check
 from ..shared.storage import read_parquet
 
 log = logging.getLogger(__name__)
@@ -43,10 +42,7 @@ def load(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataF
         log.info("[dry-run] gdelt -> %s.%s (%d baris, tidak dimuat)", schema, TABLE, len(df))
         return {"berita": df}
 
-    if is_check():
-        log.info("%d data %s berhasil didapatkan", len(df), SOURCE)
-    else:
-        upsert_df(df, schema=schema, table=TABLE, conflict_keys=CONFLICT_KEYS)
-        log.info("%d data %s berhasil dimasukkan ke database dalam tabel %s.%s",
-                 len(df), SOURCE, schema, TABLE)
+    upsert_df(df, schema=schema, table=TABLE, conflict_keys=CONFLICT_KEYS)
+    log.info("%d data %s berhasil dimasukkan ke database dalam tabel %s.%s",
+             len(df), SOURCE, schema, TABLE)
     return {"berita": df}
