@@ -136,7 +136,7 @@ ORDERSUMBER = [
     "trends",
     "transport",
     "gmaps",
-    "gmaps_review",
+    "traveloka_review",
 ]
 
 WORKERS_DEFAULT = 4
@@ -271,8 +271,8 @@ def _piih_sumber(pilihan: Optional[list[str]] = None) -> tuple[list[str], list[s
 
     `enabled` di config/sources.yaml hanya mengatur perilaku "jalankan semua".
     Kalau sumber disebut eksplisit di CLI, permintaan itu yang menang: sumber
-    bulanan seperti gmaps_review sengaja enabled=false supaya tidak ikut jalan
-    setiap hari, tapi `main.py gmaps_review` harus tetap bisa menjalankannya.
+    bulanan seperti traveloka_review sengaja enabled=false supaya tidak ikut jalan
+    setiap hari, tapi `main.py traveloka_review` harus tetap bisa menjalankannya.
     """
     himpunan_pilihan = set(pilihan) if pilihan else None
     sumber_aktif: list[str] = []
@@ -455,7 +455,7 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
                 "main.py --gmaps_harga --bronze",
                 "main.py --gmaps_harga[5] --bronze --dry-run",
                 "main.py gmaps_harga --bronze --headful",
-                "main.py gmaps_review[1] --bronze --dry-run --headful",
+                "main.py traveloka_review[1] --bronze --dry-run",
             ]
         )
         sys.stderr.write(f"ERROR: {opsi.sisa[0]} bukan sumber yang dikenal\n  Contoh: {contoh}\n")

@@ -84,12 +84,12 @@ def _ambil_per_tanggal(tanggal: date, retries: int = 3) -> list[dict[str, Any]]:
 def _resolve_tanggal(period: str | None, years: list[int], period_label: str) -> list[date]:
     """Tentukan daftar tanggal yang akan di-extract.
 
-    - 'latest'/None           -> seluruh hari 10 tahun terakhir (1 Jan tahun-10 s.d. hari ini)
+    - 'latest'/None           -> 7 hari terakhir (hari ini + 6 hari sebelumnya)
     - 'YYYY' atau 'YYYY-YYYY' -> seluruh hari dalam tahun (backfill)
     """
     today = date.today()
     if period is None or period.strip().lower() in ("", "latest", "terbaru"):
-        mulai = date(today.year - 10, 1, 1)
+        mulai = today - timedelta(days=6)
         return [mulai + timedelta(days=i) for i in range((today - mulai).days + 1)]
 
     tanggal_list: list[date] = []

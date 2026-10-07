@@ -145,8 +145,8 @@ sources:
   # headless: true (server/CI mode). Jika hasil 0 baris, kembalikan ke false.
 
   gmaps:
-    enabled: false
-    headless: true
+    enabled: true
+    headless: false
     grain: year
     playwright_required: true
     hotel_master_schema: "public"
@@ -156,7 +156,7 @@ sources:
     # Jumlah browser paralel. Sync API Playwright tidak thread-safe, jadi tiap
     # worker menjalankan playwright+browser sendiri (1 worker = 1 proses
     # Chromium). 5 worker memotong waktu run ~5x dibanding serial.
-    harga_workers: 5
+    harga_workers: 2
     blokir_gambar: true
     batas_detik_per_hotel: 420
     # Timeout navigation Google Travel (dalam ms). Halaman travel berat dan
@@ -168,27 +168,14 @@ sources:
     goto_timeout_retry_ms: 4000
     wait_load_ms: 2000
 
-  gmaps_review:
-    # enabled: false = tidak ikut "jalan semua"; dipanggil manual per bulan
-    # (`main.py gmaps_review`). Seed belum dihitung, jadi belum tentu lengkap.
-    enabled: false
-    headless: false
+  traveloka_review:
+    enabled: true
     grain: month
-    playwright_required: true
     hotel_master_schema: "public"
     hotel_master_table: "hotel_master"
-    max_reviews_per_hotel: 200
-    review_workers: 2
-    blokir_gambar: true
-    # Batas waktu per hotel supaya satu hotel yang macet tidak menahan run
-    # bulanan selama berjam-jam.
-    batas_detik_per_hotel: 90
-    # Timeout navigation Maps (ms): coba 2s, percobaan terakhir 4s.
-    goto_timeout_ms: 2000
-    goto_timeout_retry_ms: 4000
-    # Menunggu render tetap 8s (bukan 2s): daftar ulasan dimuat bertahap dan
-    # butuh waktu, memotongnya membuat jumlah ulasan per hotel turun.
-    wait_load_ms: 8000
+    max_pages_per_hotel: 50
+    request_delay_seconds: 1.0
+    timeout_seconds: 30
 
   transport:
     enabled: true

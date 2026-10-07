@@ -30,30 +30,6 @@ ARG_BROWSER_STABIL = [
     "--disable-renderer-backgrounding",
 ]
 
-SEL_KARTU_ULASAN = "div[data-review-id], div.jftiEf, div[role='article'][aria-label*='Ulasan']"
-SEL_TAB_ULASAN = (
-    'button[role="tab"]:has-text("Ulasan"), button[role="tab"]:has-text("Reviews"), '
-    'button[role="tab"][aria-label*="Ulasan"], button[role="tab"][aria-label*="Review"]'
-)
-
-BULAN_ID = {
-    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
-    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
-    # singkatan yang dipakai Google di Indonesia
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "mei": 5, "jun": 6, "jul": 7,
-    "agu": 8, "agt": 8, "sep": 9, "okt": 10, "nop": 11, "nov": 11, "des": 12,
-}
-BULAN_EN = {
-    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
-    "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-}
-# `normalize_text` mengecilkan huruf, dan singkatan Indonesian vs English
-# happily bernilai sama (mar=3, aug=8, okt/oct=10, des/dec=12) sehingga cukup
-# digabung dengan urutan Indonesia dulu.
-BULAN = {**BULAN_EN, **BULAN_ID}
-
 
 # ============================================================
 # BROWSER
@@ -74,22 +50,23 @@ def mau_headless(cfg: dict) -> bool:
 JENDELA_LEBAR, JENDELA_TINGGI = 1000, 900
 
 
-def buka_browser(playwright, headless: bool, indeks: int = 0, jumlah: int = 1):
-    """Buka Chromium dengan argumen yang sama persis Review_hotel.py.
+UA_CHROME = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
-    Headful memakai `--start-maximized` tanpa flag penstabil lain. Google Maps
-    hanya merender tab "Ulasan" dan daftar ulasan di jendela sungguhan, dan
-    penyesuaian argumen (disable-gpu, renderer-process-limit, hide automation)
-    justru membuat halaman gagal memuat panel ulasan.
+def buka_browser(playwright, headless: bool, indeks: int = 0, jumlah: int = 1):
+    """Buka Chromium dengan argumen anti-deteksi untuk kedua mode.
+
+    --disable-blink-features=AutomationControlled disamarkan otomatisasi.
+    Headful butuh --start-maximized agar panel ulasan termuat.
     """
     if headless:
         return playwright.chromium.launch(headless=True, args=list(ARG_BROWSER_STABIL))
 
-    args = ["--start-maximized"]
+    args = ["--start-maximized", "--disable-blink-features=AutomationControlled"]
     if jumlah > 1:
-        # `--start-maximized` menumpuk semua jendela di layar yang sama.
-        # Worker kedua digeser sedikit supaya tidak menutupi worker pertama;
-        # menggeser window tidak mengubah perilaku render.
         args.append(f"--window-position={indeks * 120},0")
     return playwright.chromium.launch(headless=False, args=args)
 
@@ -101,10 +78,14 @@ def konteks_baru(browser, headless: bool, blokir_gambar: bool):
     Pemblokiran resource hanya saat headless. Di headful Google Maps butuh
     font + image + media untuk merender panel ulasan, dan memblokirnya membuat
     kartu ulasan tidak pernah termuat.
+
+    User-Agent kustom diterapkan di kedua mode untuk anti-deteksi.
     """
     if headless:
         context = browser.new_context(
-            viewport={"width": 1366, "height": 768}, locale="id-ID")
+            viewport={"width": 1366, "height": 768},
+            locale="id-ID",
+            user_agent=UA_CHROME)
 
         blokir = ["media", "font"]
         if blokir_gambar:
@@ -118,7 +99,10 @@ def konteks_baru(browser, headless: bool, blokir_gambar: bool):
 
         context.route("**/*", _route)
     else:
-        context = browser.new_context(no_viewport=True, locale="id-ID")
+        context = browser.new_context(
+            no_viewport=True,
+            locale="id-ID",
+            user_agent=UA_CHROME)
 
     return context
 

@@ -60,10 +60,8 @@ _PIPES: dict[str, dict] = {
         "transform": "src.transform.gmaps_harga_transform",
         "load": "src.load.gmaps_harga_load",
     },
-    "gmaps_review": {
-        "extract": "src.extract.gmaps_review_scraper",
-        "transform": "src.transform.gmaps_review_transform",
-        "load": "src.load.gmaps_review_load",
+    "traveloka_review": {
+        "extract": "src.extract.traveloka_review_scraper",
     },
     "transport": {
         "extract": "src.extract.transport_scraper",

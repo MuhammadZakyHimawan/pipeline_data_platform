@@ -99,11 +99,12 @@ def daftar_hotel(cfg: dict | None = None) -> list[dict]:
                 schema, table,
             )
             return []
-        df = fetch_df(
-            f'SELECT {KOLOM} FROM "{schema}"."{table}" ORDER BY id_kompetitor'
-        )
+        sql = f'SELECT {KOLOM} FROM "{schema}"."{table}" ORDER BY id_kompetitor'
+        log.info("hotel_master: executing query: %s", sql)
+        df = fetch_df(sql)
+        log.info("hotel_master: fetch_df returned %s", "None" if df is None else f"DataFrame with {len(df)} rows, columns={list(df.columns)}")
     except Exception as exc:
-        log.error("hotel_master: gagal baca %s.%s (%s)", schema, table, exc)
+        log.error("hotel_master: gagal baca %s.%s (%s)", schema, table, exc, exc_info=True)
         return []
 
     if df is None or df.empty:
@@ -111,27 +112,44 @@ def daftar_hotel(cfg: dict | None = None) -> list[dict]:
         return []
 
     out: list[dict] = []
+    skipped_no_id = 0
+    skipped_no_nama = 0
+    skipped_no_coord = 0
     for _, baris in df.iterrows():
         nama = _teks(baris["nama_hotel"])
         id_kompetitor = _teks(baris["id_kompetitor"])
-        if not nama or not id_kompetitor:
-            log.warning("hotel_master: baris tanpa id_kompetitor/nama_hotel dilewati")
+        if not nama:
+            skipped_no_nama += 1
+            log.debug("hotel_master: baris id_kompetitor=%s dilewati: nama_hotel kosong", id_kompetitor)
+            continue
+        if not id_kompetitor:
+            skipped_no_id += 1
+            log.debug("hotel_master: baris nama_hotel=%s dilewati: id_kompetitor kosong", nama)
             continue
         wilayah, kota = _pecah_kota(baris["kota"])
+        lat = angka(baris["latitude"])
+        lon = angka(baris["longitude"])
+        if lat is None or lon is None:
+            skipped_no_coord += 1
+            log.debug("hotel_master: baris id=%s nama=%s dilewati: koordinat kosong (lat=%s, lon=%s)", id_kompetitor, nama, lat, lon)
+            continue
         out.append({
             "id_kompetitor": id_kompetitor,
             "nama_hotel": nama,
             "alamat": _teks(baris["alamat"]),
             "kota": kota,
             "wilayah": wilayah,
-            "latitude": angka(baris["latitude"]),
-            "longitude": angka(baris["longitude"]),
+            "latitude": lat,
+            "longitude": lon,
         })
 
     tanpa_koord = sum(1 for h in out if h["latitude"] is None or h["longitude"] is None)
     log.info(
-        "hotel_master: %d hotel dibaca dari %s.%s%s",
+        "hotel_master: %d hotel dibaca dari %s.%s%s (dilewati: %s tanpa id, %s tanpa nama, %s tanpa koordinat)",
         len(out), schema, table,
         f" ({tanpa_koord} tanpa koordinat)" if tanpa_koord else "",
+        skipped_no_id, skipped_no_nama, skipped_no_coord,
     )
+    if out:
+        log.info("hotel_master: sample hotels: %s", [{"id": h["id_kompetitor"], "nama": h["nama_hotel"], "kota": h["kota"]} for h in out[:3]])
     return out

@@ -14,6 +14,16 @@ from .row_limit import truncate_df
 log = logging.getLogger(__name__)
 
 
+def execute_sql(sql: str, params: Sequence | None = None) -> int:
+    """Jalankan query non-SELECT (INSERT, UPDATE, DELETE). Return rowcount."""
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            affected = cur.rowcount
+        conn.commit()
+    return affected
+
+
 def build_conn_params() -> dict:
     db = get_db_config()
     return {
