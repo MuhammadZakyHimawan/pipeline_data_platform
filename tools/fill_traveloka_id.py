@@ -14,6 +14,7 @@ import json
 import logging
 import sys
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-API_URL = "https://www.traveloka.com/api/v2/hotel/search/autoComplete"
+API_URL = "https://www.traveloka.com/api/v1/hotel/autocomplete"
 
 DEFAULT_COOKIE = (
     "_fwb=150VcIGFpYrU7Cmd5BAytHP.1782122835050; _yjsu_yjad=1782122835.70a10868-979d-4236-9e17-f1d3ca07a300; "
@@ -73,10 +74,16 @@ HEADERS = {
     ),
     "content-type": "application/json",
     "origin": "https://www.traveloka.com",
-    "referer": "https://www.traveloka.com/",
+    "referer": "https://www.traveloka.com/id-id/hotel",
     "cookie": DEFAULT_COOKIE,
     "x-traveloka-app": "desktop",
     "x-traveloka-locale": "id-ID",
+    "x-client-interface": "desktop",
+    "x-domain": "accomContent",
+    "x-route-prefix": "id-id",
+    "tv-language": "id_ID",
+    "tv-currency": "IDR",
+    "tv-country": "ID",
 }
 
 COOKIE_FILE = Path.home() / ".traveloka_cookies.json"
@@ -104,10 +111,11 @@ def load_cookies() -> str | None:
     return None
 
 
-def get_fresh_traveloka_cookies(headless: bool = False) -> str:
+def get_fresh_traveloka_cookies(headless: bool = False, keep_open: bool = False) -> str:
     """
     Launch browser, wait for login, extract cookies as formatted string.
     headless=False required for manual login interaction.
+    keep_open=True keeps browser open after login for debugging (default False).
     """
     if not HAS_PLAYWRIGHT:
         raise RuntimeError("Playwright tidak terinstall. Jalankan: pip install playwright && playwright install chromium")
@@ -128,39 +136,56 @@ def get_fresh_traveloka_cookies(headless: bool = False) -> str:
         # Wait for login completion - detect user profile element
         # Traveloka typically shows user avatar/menu when logged in
         login_selectors = [
-            'button[data-testid="user-avatar"]',
-            'button[data-testid="user-menu"]',
-            '[data-testid="user-profile"]',
+            '[data-testid="user-nav-dropdown"]',
+            'a[href="/id-id/logout"]',
+            'a[href*="/user/account"]',
+            'div:has-text("Log Out")',
+            'div[class*="user"]',
+            'button[aria-label*="Akun"]',
+            '[data-testid*="user"]',
             '.user-avatar',
             '.user-menu',
-            'button:has-text("Akun")',
-            '[aria-label*="Akun"]',
-            '.profile-menu',
         ]
         
         logged_in = False
         for selector in login_selectors:
             try:
                 page.wait_for_selector(selector, timeout=300000)  # 5 menit
+                log.info("fill_traveloka_id: Login terdeteksi via selector: %s", selector)
                 logged_in = True
                 break
             except Exception:
+                log.debug("fill_traveloka_id: Selector tidak ditemukan: %s", selector)
                 continue
         
         if not logged_in:
             # Fallback: wait for any element that indicates logged-in state
             try:
-                page.wait_for_selector('button[aria-label*="Logout"], a[href*="/account"], .user-name', timeout=60000)
+                page.wait_for_selector('[data-testid="user-nav-dropdown"], a[href="/id-id/logout"], a[href*="/user/account"]', timeout=60000)
                 logged_in = True
+                log.info("fill_traveloka_id: Login terdeteksi via fallback selector")
             except Exception:
                 pass
         
         if not logged_in:
-            log.warning("Login tidak terdeteksi secara otomatis, tapi melanjutkan extract cookie...")
+            log.warning("fill_traveloka_id: Login tidak terdeteksi secara otomatis setelah 5 menit, lanjutkan ekstraksi cookie...")
         
         # Extract cookies
         cookies = context.cookies("https://www.traveloka.com")
         cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        
+        # Validate critical cookies
+        critical_cookies = ['sen_t', 'clientSessionId', 'tv_mcc_id']
+        cookie_names = {c['name'] for c in cookies}
+        missing = [c for c in critical_cookies if c not in cookie_names]
+        if missing:
+            log.warning("fill_traveloka_id: Kuki krusial hilang: %s, login mungkin gagal", missing)
+        else:
+            log.info("fill_traveloka_id: Semua kuki krusial (sen_t, clientSessionId, tv_mcc_id) berhasil diekstrak")
+        
+        if keep_open:
+            log.info("fill_traveloka_id: Browser dijaga terbuka untuk debugging. Tekan Enter untuk menutup...")
+            input()
         
         browser.close()
         
@@ -206,39 +231,84 @@ def get_hotels_without_traveloka_id() -> list[dict]:
     return df.to_dict("records")
 
 
-def extract_hotel_id_from_response(data: dict) -> tuple[str | None, str | None]:
+def _similarity(a: str, b: str) -> float:
+    """Hitung similarity score antara dua string (0.0 - 1.0)."""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _has_key_words(original: str, candidate: str) -> bool:
+    """Check if candidate contains key identifying words from original name."""
+    # Extract key words (length > 3, not common words)
+    common_words = {'hotel', 'residence', 'apartment', 'hotel', 'inn', 'guesthouse', 'hostel', 'motel', 'syariah', 'redpartner', 'reddoorz', 'oyo', 'zen', 'collection', 'premiere', 'premier', 'express', 'international', 'expo', 'citygate', 'kota', 'harapan', 'indah', 'near', 'airport', 'by', 'and', 'the', 'by', 'of', 'in', 'at', 'on', 'for', 'with', 'from', 'to', 'a', 'an', 'the'}
+    
+    original_words = set(w.lower() for w in original.split() if len(w) > 3 and w.lower() not in common_words)
+    candidate_lower = candidate.lower()
+    
+    # Check if at least one key word from original appears in candidate
+    for word in original_words:
+        if word in candidate_lower:
+            return True
+    return False
+
+
+def extract_hotel_id_from_response(data: dict, query: str) -> tuple[str | None, str | None]:
     """
-    Parsing fleksibel response Traveloka autocomplete.
+    Parsing response Traveloka autocomplete v1 dengan fuzzy matching.
     Return (objectId, found_name) atau (None, None) jika tidak ditemukan.
     """
+    THRESHOLD = 0.65  # Minimum similarity score (lowered from 0.75)
+    STRONG_THRESHOLD = 0.75  # Strong match threshold
     try:
-        # Cek beberapa kemungkinan struktur response
+        rows = data.get("data", {}).get("hotelContent", {}).get("rows", [])
         candidates = []
-        for key in ("autocomplete", "items", "suggestions", "results"):
-            val = data.get("data", {}).get(key)
-            if isinstance(val, list):
-                candidates.extend(val)
         
-        for item in candidates:
+        for item in rows:
             if not isinstance(item, dict):
                 continue
             
-            # Cek tipe hotel (type atau itemType)
-            item_type = item.get("type") or item.get("itemType")
-            if item_type != "HOTEL":
+            # Cek tipe hotel
+            if item.get("type") != "HOTEL" or item.get("accommodationType") != "HOTEL":
                 continue
             
-            # Ambil ID (id atau objectId)
-            object_id = item.get("id") or item.get("objectId")
+            object_id = item.get("id")
             if not object_id:
                 continue
             
-            # Ambil nama untuk logging/spot-check
-            found_name = item.get("name") or item.get("displayName") or item.get("label") or "Unknown"
-            return str(object_id), str(found_name)
+            found_name = item.get("displayName") or item.get("name") or "Unknown"
+            score = _similarity(query, found_name)
+            candidates.append((score, object_id, found_name))
+        
+        if not candidates:
+            return None, None
+        
+        # Sort by score descending
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Log top 3 candidates untuk debugging
+        for score, oid, name in candidates[:3]:
+            log.debug(f"  Kandidat: {name} (id: {oid}) - score: {score:.3f}")
+        
+        # Ambil yang score tertinggi di atas threshold
+        best_score, best_oid, best_name = candidates[0]
+        
+        # Check if key words from original query are present in matched name
+        has_key_words = _has_key_words(query, best_name)
+        
+        if best_score >= STRONG_THRESHOLD and has_key_words:
+            log.info(f"  Match (strong): {best_name} (score: {best_score:.3f})")
+            return str(best_oid), str(best_name)
+        elif best_score >= THRESHOLD and has_key_words:
+            log.info(f"  Match (moderate): {best_name} (score: {best_score:.3f})")
+            return str(best_oid), str(best_name)
+        elif best_score >= THRESHOLD:
+            log.warning(f"  Match tanpa kata kunci: {best_name} (score: {best_score:.3f}) - review manual")
+            return str(best_oid), str(best_name)
+        else:
+            log.warning(f"  Tidak ada match di atas threshold {THRESHOLD}. Terbaik: {best_name} (score: {best_score:.3f})")
+            return None, None
+            
     except (AttributeError, TypeError):
-        pass
-    return None, None
+        return None, None
 
 
 def build_headers(cookie_str: str) -> dict:
@@ -250,17 +320,91 @@ def build_headers(cookie_str: str) -> dict:
         ),
         "content-type": "application/json",
         "origin": "https://www.traveloka.com",
-        "referer": "https://www.traveloka.com/",
+        "referer": "https://www.traveloka.com/id-id/hotel",
         "cookie": cookie_str,
         "x-traveloka-app": "desktop",
         "x-traveloka-locale": "id-ID",
+        "x-client-interface": "desktop",
+        "x-domain": "accomContent",
+        "x-route-prefix": "id-id",
+        "tv-language": "id_ID",
+        "tv-currency": "IDR",
+        "tv-country": "ID",
     }
+
+
+def _generate_query_variations(nama_hotel: str) -> list[str]:
+    """
+    Generate query variations from hotel name, from most specific to most general.
+    Returns list of queries to try in order.
+    """
+    # Common suffixes/prefixes to remove for simplification
+    # Each pattern replaces with a single space to avoid word concatenation
+    remove_patterns = [
+        (r'\s+by\s+\w+', ' '),           # "by Wyndham", "by IHG"
+        (r'\s*&\s*Suites?', ' '),        # "& Suites", "& Suite"
+        (r'\s*Hotel\s+', ' '),           # "Hotel "
+        (r'\s*Residence\s+', ' '),       # "Residence "
+        (r'\s*Apartment\s+', ' '),       # "Apartment "
+        (r'\s*Guest\s+House\s+', ' '),   # "Guest House "
+        (r'\s*Hostel\s+', ' '),          # "Hostel "
+        (r'\s*Motel\s+', ' '),           # "Motel "
+        (r'\s*Inn\s+', ' '),             # "Inn "
+        (r'\s*Guesthouse\s+', ' '),      # "Guesthouse "
+        (r'\s*Syariah\s+', ' '),         # "Syariah "
+        (r'\s*RedPartner\s+', ' '),      # "RedPartner"
+        (r'\s*RedDoorz\s+', ' '),        # "RedDoorz "
+        (r'\s*OYO\s+', ' '),             # "OYO "
+        (r'\s*ZEN\s+', ' '),             # "ZEN "
+        (r'\s*Collection\s+', ' '),      # "Collection "
+        (r'\s*Premiere\s+', ' '),        # "Premiere "
+        (r'\s*Premier\s+', ' '),         # "Premier "
+        (r'\s*Express\s+', ' '),         # "Express "
+        (r'\s*International\s+', ' '),   # "International "
+        (r'\s*Expo\s+', ' '),            # "Expo "
+        (r'\s*Citygate\s+', ' '),        # "Citygate "
+        (r'\s*Kota\s+Harapan\s+Indah', ' '),  # "Kota Harapan Indah"
+        (r'\s*near\s+\w+(?:\s+\w+)?', ' '),   # "near Soekarno Hatta" / "Airport"
+        (r'\s*@\s*\w+', ' '),            # "@ Aeropolis"
+        (r'\s+[A-Z]{2,}\s*$', ''),       # Trailing airport codes
+    ]
+    
+    queries = [nama_hotel]  # Start with full name
+    
+    # Generate simplified versions by removing patterns
+    simplified = nama_hotel
+    import re
+    for pattern, replacement in remove_patterns:
+        simplified = re.sub(pattern, replacement, simplified, flags=re.IGNORECASE)
+        # Normalize multiple spaces to single space
+        simplified = re.sub(r'\s+', ' ', simplified).strip()
+        if simplified != nama_hotel and simplified not in queries:
+            queries.append(simplified)
+    
+    # Also try just the first 2-3 words (core brand/name)
+    words = nama_hotel.split()
+    if len(words) >= 2:
+        queries.append(' '.join(words[:2]))  # First 2 words
+    if len(words) >= 3:
+        queries.append(' '.join(words[:3]))  # First 3 words
+    if len(words) >= 4:
+        queries.append(' '.join(words[:4]))  # First 4 words
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_clean = q.strip()
+        if q_clean and q_clean not in seen:
+            seen.add(q_clean)
+            unique_queries.append(q_clean)
+    
+    return unique_queries
 
 
 def search_traveloka_hotel_id(nama_hotel: str, cookie_str: str | None = None, 
                               auto_login: bool = False, headless_login: bool = False) -> tuple[str | None, str | None]:
-    """Cari objectId hotel pertama dari autocomplete Traveloka."""
-    payload = {"clientInterface": "desktop", "data": {"query": nama_hotel}}
+    """Cari objectId hotel pertama dari autocomplete Traveloka v1."""
     
     # Get effective cookies
     if cookie_str is None:
@@ -269,6 +413,14 @@ def search_traveloka_hotel_id(nama_hotel: str, cookie_str: str | None = None,
         except RuntimeError as exc:
             log.warning("  %s", exc)
             return None, None
+    
+    # Extract sen_t token from cookie
+    cookie_dict = dict(item.split("=", 1) for item in cookie_str.split("; ") if "=" in item)
+    sen_t_token = cookie_dict.get("sen_t", "")
+    
+    # Generate query variations to try
+    query_variations = _generate_query_variations(nama_hotel)
+    log.debug("  Query variations: %s", query_variations)
     
     max_retries = 2 if auto_login else 1
     
@@ -283,17 +435,46 @@ def search_traveloka_hotel_id(nama_hotel: str, cookie_str: str | None = None,
             
             headers = build_headers(cookie_str)
             
-            resp = session.post(API_URL, json=payload, headers=headers, timeout=15)
-            log.debug("  Response status: %s, body: %s", resp.status_code, resp.text[:500])
-            
-            if resp.status_code == 401 and attempt < max_retries - 1 and auto_login and HAS_PLAYWRIGHT:
-                log.info("  Cookie expired (401), mencoba auto-login ulang...")
-                cookie_str = get_fresh_traveloka_cookies(headless=headless_login)
-                continue
-            
-            resp.raise_for_status()
-            data = resp.json()
-            return extract_hotel_id_from_response(data)
+            # Try each query variation until we get results
+            for query_idx, query in enumerate(query_variations):
+                payload = {
+                    "clientInterface": "desktop",
+                    "data": {
+                        "query": query,
+                        "experimentContext": {
+                            "mapParamKeyToVariant": {"varAutocompleteLogic": "control"}
+                        }
+                    },
+                    "fields": [],
+                    "sentinel": {
+                        "signals": [],
+                        "token": sen_t_token
+                    }
+                }
+                
+                resp = session.post(API_URL, json=payload, headers=headers, timeout=15)
+                log.debug("  Query '%s': status=%d, results=%d", query, resp.status_code, len(resp.json().get("data", {}).get("hotelContent", {}).get("rows", [])))
+                
+                if resp.status_code == 401 and attempt < max_retries - 1 and auto_login and HAS_PLAYWRIGHT:
+                    log.info("  Cookie expired (401), mencoba auto-login ulang...")
+                    cookie_str = get_fresh_traveloka_cookies(headless=headless_login)
+                    cookie_dict = dict(item.split("=", 1) for item in cookie_str.split("; ") if "=" in item)
+                    sen_t_token = cookie_dict.get("sen_t", "")
+                    continue
+                
+                resp.raise_for_status()
+                data = resp.json()
+                rows = data.get("data", {}).get("hotelContent", {}).get("rows", [])
+                
+                if rows:
+                    log.debug("  Query '%s' returned %d results", query, len(rows))
+                    return extract_hotel_id_from_response(data, query)
+                elif query_idx < len(query_variations) - 1:
+                    log.debug("  Query '%s' returned 0 results, trying next variation...", query)
+                    continue
+                else:
+                    log.warning("  All query variations returned 0 results")
+                    return None, None
             
         except requests.RequestException as exc:
             log.warning("  API error untuk '%s': %s", nama_hotel, exc)

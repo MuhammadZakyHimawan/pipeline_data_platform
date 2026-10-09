@@ -97,7 +97,15 @@ def get_stage_path(source: str, stage: str) -> str:
     return fqnm.replace(".", "/") + ".py" if fqnm else f"{stage}/<belum?>.py"
 
 
-def run_stage(source: str, stage: str, period: str | None = None, dry_run: bool = False) -> dict:
+def run_stage(
+    source: str, 
+    stage: str, 
+    period: str | None = None, 
+    dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False,
+    keep_browser_open: bool = False
+) -> dict:
     """Jalankan satu tahap (extract/transform/load) untuk satu sumber."""
     if source not in _PIPES:
         raise ValueError(
@@ -120,7 +128,7 @@ def run_stage(source: str, stage: str, period: str | None = None, dry_run: bool 
     module = _import_module(_PIPES[source][stage])
     start = time.time()
     log.info("=== %s.%s mulai (periode %s) ===", source, stage, period_label)
-    result = module.extract(period=period, dry_run=dry_run) if stage == "extract" else (
+    result = module.extract(period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open) if stage == "extract" else (
         module.transform(period=period, dry_run=dry_run) if stage == "transform" else module.load(period=period, dry_run=dry_run)
     )
     elapsed = time.time() - start
@@ -128,11 +136,17 @@ def run_stage(source: str, stage: str, period: str | None = None, dry_run: bool 
     return result
 
 
-def run_pipeline(source: str, period: str | None = None, dry_run: bool = False) -> dict[str, dict]:
+def run_pipeline(
+    source: str, 
+    period: str | None = None, 
+    dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False
+) -> dict[str, dict]:
     """Jalankan ETL penuh (extract -> transform -> load) untuk satu sumber."""
     summary: dict[str, dict] = {}
     stages = ("extract", "transform", "load")
     for stage in stages:
-        result = run_stage(source, stage, period=period, dry_run=dry_run)
+        result = run_stage(source, stage, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login)
         summary[stage] = {k: len(v) for k, v in result.items()}
     return summary

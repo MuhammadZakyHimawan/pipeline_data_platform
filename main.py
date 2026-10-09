@@ -169,6 +169,9 @@ class OpsiCLI:
         self.headful: bool = False
         self.resume: bool = False
         self.test: bool = False
+        self.force_login: bool = False
+        self.headless_login: bool = False
+        self.keep_browser_open: bool = False
 
     @property
     def pakai_pintasan(self) -> bool:
@@ -179,6 +182,9 @@ class OpsiCLI:
             or self.headful
             or self.resume
             or self.test
+            or self.force_login
+            or self.headless_login
+            or self.keep_browser_open
         )
 
 
@@ -188,6 +194,9 @@ _UJI_FLAG = {
     "--headful": "headful",
     "--lanjut": "resume",
     "--test": "test",
+    "--force-login": "force_login",
+    "--headless": "headless_login",
+    "--keep-browser-open": "keep_browser_open",
 }
 
 
@@ -298,6 +307,9 @@ def _run_sources(
     pilihan: Optional[list[str]] = None,
     stages: Optional[tuple[str, ...]] = None,
     dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False,
+    keep_browser_open: bool = False,
 ) -> None:
     """Jalankan sumber enabled per stage secara serial.
 
@@ -335,6 +347,12 @@ def _run_sources(
         catatan.append("  (mode check: tidak ada file/DB yang ditulis)")
     if dry_run:
         catatan.append("  (dry-run: tidak ada file/DB yang ditulis)")
+    if force_login:
+        catatan.append("  (force-login: login fresh via browser)")
+    if headless_login:
+        catatan.append("  (headless: login tanpa UI)")
+    if keep_browser_open:
+        catatan.append("  (keep-browser-open: browser dijaga terbuka)")
     if tampilan is not None:
         pasang_tampilan_log(tampilan)
         for baris in catatan:
@@ -350,7 +368,7 @@ def _run_sources(
                 tampilan.muat(sumber, stage, "jalan", None, None)
             start = time.time()
             try:
-                result = run_stage(sumber, stage, dry_run=dry_run)
+                result = run_stage(sumber, stage, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 status = "ok"
                 info = f"{sum(len(v) for v in result.values())} baris"
                 if is_check():
@@ -388,7 +406,13 @@ def _run_sources(
         raise SystemExit(1)
 
 
-def run_all(stages: Optional[tuple[str, ...]] = None, dry_run: bool = False) -> None:
+def run_all(
+    stages: Optional[tuple[str, ...]] = None,
+    dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False,
+    keep_browser_open: bool = False,
+) -> None:
     """Jalankan seluruh sumber enabled secara paralel (default 4 worker).
 
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
@@ -412,6 +436,9 @@ def run_single(
     source: str,
     stages: Optional[tuple[str, ...]] = None,
     dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False,
+    keep_browser_open: bool = False,
 ) -> None:
     """Jalankan satu sumber (extract -> transform -> load)."""
     if HAS_TYPER:
@@ -428,7 +455,7 @@ def run_single(
             fg=colors.RED,
         )
         raise SystemExit(1)
-    _run_sources([source], stages, dry_run=dry_run)
+    _run_sources([source], stages, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
 
 
 def _jalankan_pintasan(opsi: OpsiCLI) -> None:
@@ -442,9 +469,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
         if opsi.sumber is None:
             if not opsi.test:
                 set_row_limit(None)
-            run_all(opsi.stages, dry_run=opsi.dry_run)
+            run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
         else:
-            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run)
+            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
         return
 
     pintasan = _parse_shortcut(opsi.sisa)
@@ -471,9 +498,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     if limit is not None:
         set_row_limit(limit)
     if target is None:
-        run_all(opsi.stages, dry_run=opsi.dry_run)
+        run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
     else:
-        run_single(target, opsi.stages, dry_run=opsi.dry_run)
+        run_single(target, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login)
 
 
 def main() -> None:
