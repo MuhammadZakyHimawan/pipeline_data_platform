@@ -71,15 +71,18 @@ if HAS_TYPER:
         stage: str = typer.Option("all", help="all | extract | transform | load"),
         period: Optional[str] = typer.Option(None, help="latest | YYYY | YYYY-YYYY"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Tanpa menulis file/DB"),
+        force_login: bool = typer.Option(False, "--force-login", help="Login fresh via browser"),
+        headless_login: bool = typer.Option(False, "--headless", help="Login tanpa UI (headless)"),
+        keep_browser_open: bool = typer.Option(False, "--keep-browser-open", help="Jaga browser terbuka setelah login"),
     ) -> None:
         """Jalankan pipeline untuk satu sumber."""
         logger = setup_logging()
         try:
             if stage == "all":
-                summary = run_pipeline(source, period=period, dry_run=dry_run)
+                summary = run_pipeline(source, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 logger.info("Pipeline '%s' selesai: %s", source, summary)
             elif stage in ("extract", "transform", "load"):
-                result = run_stage(source, stage, period=period, dry_run=dry_run)
+                result = run_stage(source, stage, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 logger.info("Stage '%s' '%s' selesai: %s", stage, source, {k: len(v) for k, v in result.items()})
             else:
                 raise typer.BadParameter("stage harus all|extract|transform|load", param_hint="stage")
@@ -100,6 +103,9 @@ def _run_argparse() -> None:
     p_run.add_argument("--stage", choices=["all", "extract", "transform", "load"], default="all")
     p_run.add_argument("--period", default=None, help="latest | YYYY | YYYY-YYYY")
     p_run.add_argument("--dry-run", action="store_true")
+    p_run.add_argument("--force-login", action="store_true", help="Login fresh via browser")
+    p_run.add_argument("--headless", action="store_true", help="Login tanpa UI (headless)")
+    p_run.add_argument("--keep-browser-open", action="store_true", help="Jaga browser terbuka setelah login")
 
     args = parser.parse_args()
     logger = setup_logging()
@@ -113,10 +119,10 @@ def _run_argparse() -> None:
     elif args.command == "run":
         try:
             if args.stage == "all":
-                summary = run_pipeline(args.source, period=args.period, dry_run=args.dry_run)
+                summary = run_pipeline(args.source, period=args.period, dry_run=args.dry_run, force_login=args.force_login, headless_login=args.headless, keep_browser_open=args.keep_browser_open)
                 logger.info("Pipeline '%s' selesai: %s", args.source, summary)
             else:
-                result = run_stage(args.source, args.stage, period=args.period, dry_run=args.dry_run)
+                result = run_stage(args.source, args.stage, period=args.period, dry_run=args.dry_run, force_login=args.force_login, headless_login=args.headless, keep_browser_open=args.keep_browser_open)
                 logger.info("Stage '%s' '%s' selesai: %s", args.stage, args.source, {k: len(v) for k, v in result.items()})
         except Exception as exc:
             logger.error("ERROR: %s", exc)
@@ -216,6 +222,13 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
     jalur typer serta pintasan lama (positional) tidak berubah.
     """
     opsi = OpsiCLI()
+
+    # Jika argumen pertama adalah subcommand typer (run, list, db-init),
+    # lewati parsing pintasan agar typer/argparse yang handle.
+    if args and args[0] in ("run", "list", "db-init"):
+        opsi.sisa = args[:]
+        return opsi
+
     terpilih: list[str] = []
     for arg in args:
         kunci = arg.strip().lower()
@@ -508,7 +521,7 @@ def main() -> None:
     if opsi.pakai_pintasan:
         _jalankan_pintasan(opsi)
         return
-    pintasan = _parse_shortcut(sys.argv[1:])
+    pintasan = _parse_shortcut(opsi.sisa)
     if pintasan is not None:
         target, limit = pintasan
         if limit is not None:

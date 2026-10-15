@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import re
 import time
 
@@ -128,9 +129,20 @@ def run_stage(
     module = _import_module(_PIPES[source][stage])
     start = time.time()
     log.info("=== %s.%s mulai (periode %s) ===", source, stage, period_label)
-    result = module.extract(period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open) if stage == "extract" else (
-        module.transform(period=period, dry_run=dry_run) if stage == "transform" else module.load(period=period, dry_run=dry_run)
-    )
+    if stage == "extract":
+        sig = inspect.signature(module.extract)
+        kwargs = {"period": period, "dry_run": dry_run}
+        if "force_login" in sig.parameters:
+            kwargs["force_login"] = force_login
+        if "headless_login" in sig.parameters:
+            kwargs["headless_login"] = headless_login
+        if "keep_browser_open" in sig.parameters:
+            kwargs["keep_browser_open"] = keep_browser_open
+        result = module.extract(**kwargs)
+    elif stage == "transform":
+        result = module.transform(period=period, dry_run=dry_run)
+    else:
+        result = module.load(period=period, dry_run=dry_run)
     elapsed = time.time() - start
     log.info("=== %s.%s selesai (%.1f dtk, %d dataset) ===", source, stage, elapsed, len(result))
     return result

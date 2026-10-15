@@ -1,4 +1,4 @@
-"""Extract ulasan Traveloka via API direct request -> bronze Parquet (grain: month)."""
+"""Extract ulasan Traveloka via API direct request -> bronze Parquet (grain: year)."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from typing import Any
 import pandas as pd
 import requests
 
+from ..shared.checkpoint import Checkpoint
 from ..shared.config import get_source_config
 from ..shared.db import fetch_df, table_exists
 from ..shared.periods import resolve_months
 from ..shared.row_limit import get_row_limit, truncate_df
-from ..shared.storage import write_parquet
+from ..shared.run_options import get_resume
+from ..shared.storage import write_parquet, write_parquet_by_year
 
 # Playwright untuk bypass anti-bot
 try:
@@ -399,6 +401,106 @@ def _get_traveloka_hotels(cfg: dict) -> list[dict]:
         }
         for _, row in df.iterrows()
     ]
+
+
+def extract_year(
+    year: int = 2026,
+    dry_run: bool = False,
+    force_login: bool = False,
+    headless_login: bool = False,
+    keep_browser_open: bool = False,
+    resume: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """EXTRACT (bronze): Traveloka reviews per hotel -> data_lake/bronze/traveloka_review/review/{YYYY}.parquet
+    
+    Fetches ALL reviews for the given year, writes incrementally per hotel to yearly Parquet files.
+    Supports resume via checkpoint (--lanjut flag).
+    """
+    cfg = get_source_config(SOURCE)
+
+    target_hotels = _get_traveloka_hotels(cfg)
+    if not target_hotels:
+        return {}
+
+    max_pages = int(cfg.get("max_pages_per_hotel", 50))
+    delay = float(cfg.get("request_delay_seconds", 1.0))
+    timeout = int(cfg.get("timeout_seconds", 30))
+
+    # Checkpoint for resume
+    checkpoint = Checkpoint(SOURCE)
+    if resume or get_resume():
+        sudah = checkpoint.muat()
+        target_hotels = [h for h in target_hotels if not checkpoint.sudah(h.get("id_kompetitor"))]
+        if not target_hotels:
+            log.info("traveloka_review: semua hotel sudah diproses hari ini, tidak ada yang diulang")
+            checkpoint.bersihkan()
+            return {}
+        log.info("traveloka_review: melanjutkan, %d hotel tersisa", len(target_hotels))
+    else:
+        checkpoint.bersihkan()
+
+    # Prepare cookies once
+    if force_login:
+        log.info("traveloka_review: Force login enabled, performing fresh login once...")
+        cookie_str = get_fresh_traveloka_cookies(headless=headless_login, keep_open=keep_browser_open)
+        cookie_dict = dict(item.split("=", 1) for item in cookie_str.split("; ") if "=" in item)
+        sen_t_token = cookie_dict.get("sen_t", "")
+        log.info("traveloka_review: Fresh login completed, got %d cookies", len(cookie_dict))
+    else:
+        cookie_str, sen_t_token, cookie_dict = _load_cookie_and_token()
+        if not cookie_str:
+            log.warning("traveloka_review: Cookie tidak ditemukan, tidak bisa fetch review.")
+            return {}
+
+    for hotel in target_hotels:
+        object_id = hotel.get("objectId")
+        if not object_id:
+            continue
+
+        log.info("traveloka_review: fetching reviews for %s (objectId=%s)", hotel.get("nama_hotel"), object_id)
+        raw_reviews = _fetch_all_reviews(
+            object_id, 
+            max_pages, 
+            delay, 
+            timeout,
+            cookie_str=cookie_str,
+            sen_t_token=sen_t_token,
+            cookie_dict=cookie_dict,
+            headless_login=headless_login,
+            keep_browser_open=keep_browser_open
+        )
+
+        if raw_reviews:
+            extracted = _extract_review_fields(raw_reviews, hotel)
+            if extracted:
+                hotel_df = pd.DataFrame(extracted)
+                hotel_df["tanggal_ulasan"] = pd.to_datetime(hotel_df["tanggal_ulasan"], errors="coerce")
+                
+                if not dry_run:
+                    write_parquet_by_year(
+                        hotel_df,
+                        "bronze",
+                        SOURCE,
+                        DATASET,
+                        year_col="tanggal_ulasan",
+                        mode="append",
+                        dedup_cols=["id_ulasan"],
+                    )
+                log.info("traveloka_review: %s -> %d ulasan (tertulis per tahun)", hotel.get("nama_hotel"), len(extracted))
+        else:
+            log.info("traveloka_review: %s -> 0 ulasan", hotel.get("nama_hotel"))
+
+        # Mark hotel done AFTER successful write
+        checkpoint.tandai(hotel.get("id_kompetitor"))
+
+    checkpoint.simpan()
+
+    if dry_run:
+        log.info("[dry-run] traveloka_review bronze %d: selesai (tidak ditulis)", year)
+    else:
+        log.info("traveloka_review bronze %d: selesai", year)
+
+    return {DATASET: pd.DataFrame()}
 
 
 def extract(

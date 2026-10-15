@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +17,124 @@ DATA_LABEL = "data"
 
 # Kolom tanggal yang lazim dipakai tiap sumber untuk diturunkan tahun filet.
 DATE_COLUMNS = ("tanggal", "time", "tanggal_mulai", "tanggal_berita", "tanggal_tarik")
+
+# ============================================================
+# FILE LOCK (cross-platform, thread-safe untuk mode append)
+# ============================================================
+
+class FileLock:
+    """File-based lock untuk mencegah race condition saat tulis parquet paralel.
+    
+    Menggunakan lock file (`.lock`) dengan atomic create (O_CREAT | O_EXCL).
+    Cross-platform: Windows (msvcrt) dan Unix (fcntl/lockf).
+    """
+    
+    def __init__(self, path: Path, timeout: float = 30.0, poll_interval: float = 0.1):
+        self.path = path
+        self.lock_path = path.with_suffix(path.suffix + ".lock")
+        self.timeout = timeout
+        self.poll_interval = poll_interval
+        self._fd: int | None = None
+    
+    def __enter__(self) -> "FileLock":
+        self.acquire()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.release()
+    
+    def acquire(self) -> None:
+        """Dapatkan lock, tunggu hingga timeout."""
+        # Ensure parent directory exists
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        start = time.monotonic()
+        while True:
+            try:
+                # Atomic create: O_CREAT | O_EXCL gagal jika file sudah ada
+                self._fd = os.open(
+                    self.lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644
+                )
+                # Tulis PID untuk debugging
+                os.write(self._fd, str(os.getpid()).encode())
+                return
+            except FileExistsError:
+                if time.monotonic() - start >= self.timeout:
+                    raise TimeoutError(f"Gagal dapat lock {self.lock_path} setelah {self.timeout}s")
+                time.sleep(self.poll_interval)
+            except Exception:
+                if time.monotonic() - start >= self.timeout:
+                    raise
+                time.sleep(self.poll_interval)
+    
+    def release(self) -> None:
+        """Lepaskan lock."""
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
+        try:
+            self.lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _tulis_dengan_lock(
+    path: Path,
+    df: pd.DataFrame,
+    mode: str = "replace",
+    dedup_cols: list[str] | None = None,
+    existing_df: pd.DataFrame | None = None,
+) -> tuple[Path, bool]:
+    """Tulis DataFrame ke `path` dengan file lock (thread-safe untuk append).
+    
+    Jika mode='append' dan existing_df=None, baca file existing DI DALAM lock
+    untuk menghindari race condition antar thread.
+    """
+    with FileLock(path):
+        rows_sebelum = _hitung_rows(path)
+        
+        # Untuk mode append: baca existing file di dalam lock jika tidak diberikan
+        if mode == "append":
+            if existing_df is not None:
+                lama = existing_df
+            elif path.exists():
+                lama = pd.read_parquet(path)
+            else:
+                lama = pd.DataFrame()
+            
+            bagian = pd.concat([lama, df], ignore_index=True)
+            kunci = dedup_cols or list(bagian.columns)
+            kunci = [k for k in kunci if k in bagian.columns]
+            if kunci:
+                bagian = bagian.drop_duplicates(subset=kunci, keep="last")
+        else:
+            bagian = df
+        
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            bagian.to_parquet(tmp, index=False)
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        
+        rows_sesudah = _hitung_rows(path)
+        diff = rows_sesudah - rows_sebelum
+        tanda = "+" if diff >= 0 else ""
+        log.info(
+            "%s: %d → %d baris (%s%d)",
+            path.relative_to(DATA_LAKE_DIR),
+            rows_sebelum,
+            rows_sesudah,
+            tanda,
+            diff,
+        )
+        return path, True
 
 
 def _dataset_dir(layer: str, source: str, dataset: str) -> Path:
@@ -116,7 +235,7 @@ def write_parquet_by_year(
                 dipakai sumber yang(fetch ulang satu periode utuh).
             'append'  - baris baru digabung ke file tahun yang sudah ada
                 (dipakai feed bertahap seperti gdelt, agar akumulatif tanpa
-                duplikasi).
+                duplikasi). Thread-safe dengan file lock.
         dedup_cols: kolom kunci unik baris untuk mode='append'. Default: semua
             kolom. Hanya dipakai bila file tahun sudah ada.
 
@@ -143,19 +262,14 @@ def write_parquet_by_year(
     n_ditulis = 0
     n_dilewati = 0
     d = _dataset_dir(layer, source, dataset)
+
     for y in sorted(tahun.dropna().unique().tolist()):
         bagian = df[tahun == y]
         if bagian.empty:
             continue
         path = d / f"{int(y)}.parquet"
-        if mode == "append" and path.exists():
-            lama = pd.read_parquet(path)
-            bagian = pd.concat([lama, bagian], ignore_index=True)
-            kunci = dedup_cols or list(bagian.columns)
-            kunci = [k for k in kunci if k in bagian.columns]
-            if kunci:
-                bagian = bagian.drop_duplicates(subset=kunci, keep="last")
-        hasil_tulis = _tulis(path, bagian)
+        # existing_df=None: _tulis_dengan_lock akan baca file di dalam lock
+        hasil_tulis = _tulis_dengan_lock(path, bagian, mode, dedup_cols, None)
         paths.append(hasil_tulis[0])
         if hasil_tulis[1]:
             n_ditulis += 1
