@@ -68,24 +68,24 @@ if HAS_TYPER:
     @app.command("run")
     def run(
         source: str = typer.Argument(..., help="Nama sumber (contoh: bps)"),
-        stage: str = typer.Option("all", help="all | extract | transform | load"),
+        stage: str = typer.Option("all", help="all | bronze"),
         period: Optional[str] = typer.Option(None, help="latest | YYYY | YYYY-YYYY"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Tanpa menulis file/DB"),
         force_login: bool = typer.Option(False, "--force-login", help="Login fresh via browser"),
         headless_login: bool = typer.Option(False, "--headless", help="Login tanpa UI (headless)"),
         keep_browser_open: bool = typer.Option(False, "--keep-browser-open", help="Jaga browser terbuka setelah login"),
     ) -> None:
-        """Jalankan pipeline untuk satu sumber."""
+        """Jalankan pipeline bronze (extract) untuk satu sumber."""
         logger = setup_logging()
         try:
             if stage == "all":
                 summary = run_pipeline(source, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 logger.info("Pipeline '%s' selesai: %s", source, summary)
-            elif stage in ("extract", "transform", "load"):
+            elif stage == "bronze":
                 result = run_stage(source, stage, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 logger.info("Stage '%s' '%s' selesai: %s", stage, source, {k: len(v) for k, v in result.items()})
             else:
-                raise typer.BadParameter("stage harus all|extract|transform|load", param_hint="stage")
+                raise typer.BadParameter("stage harus all|bronze", param_hint="stage")
         except Exception as exc:
             typer.secho(f"ERROR: {exc}", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -100,7 +100,7 @@ def _run_argparse() -> None:
 
     p_run = sub.add_parser("run", help="jalankan pipeline satu sumber")
     p_run.add_argument("source", help="nama sumber (bps)")
-    p_run.add_argument("--stage", choices=["all", "extract", "transform", "load"], default="all")
+    p_run.add_argument("--stage", choices=["all", "bronze"], default="all")
     p_run.add_argument("--period", default=None, help="latest | YYYY | YYYY-YYYY")
     p_run.add_argument("--dry-run", action="store_true")
     p_run.add_argument("--force-login", action="store_true", help="Login fresh via browser")
@@ -153,11 +153,10 @@ _PAREN_SRC_RE = re.compile(r"^\((\w+)\)$")
 _SRC_LIMIT_RE = re.compile(r"^(\w+)\[(\d+)\]$")
 _SRC_ONLY_RE = re.compile(r"^(\w+)$")
 
-# Flag tahap untuk jalur pintasan: '--bronze' = jalankan stage extract saja.
+# Flag tahap untuk jalur pintasan: '--bronze' = jalankan stage bronze saja.
 # Ditabulasi dengan pintasan sumber/limit, mis. `main.py gmaps_harga[5] --bronze`.
 _STAGE_FLAG = {
-    "--bronze": ("extract",),
-    "--silver": ("transform",),
+    "--bronze": ("bronze",),
 }
 
 # Flag sumber: '--<sumber>' untuk semua sumber di ORDERSUMBER, mis. --gmaps_harga.
@@ -210,8 +209,7 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
     """Pisahkan flag pintasan (tahap/sumber/uji) dari argumen lain.
 
     Flag yang dikenali:
-      --bronze        -> stage extract saja
-      --silver        -> stage transform saja
+      --bronze        -> stage bronze saja
       --<sumber>      -> jalankan satu sumber, mis. --gmaps_harga
       --dry-run       -> jalankan tanpa menulis file/DB
       --headful       -> tampilkan browser (debug selector)

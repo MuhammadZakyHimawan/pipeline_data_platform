@@ -19,7 +19,7 @@ _CONSOLE_LEVEL = logging.WARNING
 _FILE_LEVEL = logging.DEBUG
 
 # src.<stage>.<modul> -> stage & sumber
-_STAGE_RE = re.compile(r"^src\.(extract|transform|load)\.(.+)$")
+_STAGE_RE = re.compile(r"^src\.(bronze|silver|gold)\.(.+)$")
 _SUFFIX_RE = re.compile(r"_(scraper|transform|load)$")
 
 # logger pihak ketiga yang bising; diamkan agar file log fokus ke kode pipeline
@@ -31,9 +31,9 @@ _CONFIGURED = False
 def sumber_dari_logger(name: str) -> tuple[str, str] | None:
     """Petakan nama logger modul pipeline ke (stage, sumber); None bila bukan.
 
-    - src.extract.bps_scraper             -> ('extract', 'bps')
-    - src.transform.hari_libur_transform -> ('transform', 'hari_libur')
-    - src.load.gmaps_harga_load           -> ('load', 'gmaps_harga')
+    - src.bronze.bps_scraper             -> ('bronze', 'bps')
+    - src.silver.hari_libur_transform   -> ('silver', 'hari_libur')
+    - src.gold.gmaps_harga_load          -> ('gold', 'gmaps_harga')
     - src.shared.storage / root / ''      -> None (bukan script pipeline)
 
     Dipakai `_record_target` untuk menentukan file log per stage & sumber.
@@ -48,9 +48,9 @@ def sumber_dari_logger(name: str) -> tuple[str, str] | None:
 def _record_target(name: str, log_dir: Path) -> Path:
     """Tentukan file log target dari nama logger.
 
-    - src.extract.bps_scraper          -> <log_dir>/extract/bps.log
-    - src.transform.hari_libur_transform -> <log_dir>/transform/hari_libur.log
-    - src.load.gmaps_harga_load        -> <log_dir>/load/gmaps_harga.log
+    - src.bronze.bps_scraper          -> <log_dir>/bronze/bps.log
+    - src.silver.hari_libur_transform -> <log_dir>/silver/hari_libur.log
+    - src.gold.gmaps_harga_load       -> <log_dir>/gold/gmaps_harga.log
     - selain itu (root, src.shared.*)  -> <log_dir>/pipeline.log
     """
     kunci = sumber_dari_logger(name)

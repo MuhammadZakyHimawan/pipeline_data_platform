@@ -16,7 +16,7 @@ from .shared.run_options import get_dry_run, set_dry_run
 
 _ANTRIAN: multiprocessing.Queue | None = None
 
-STAGES = ("extract", "transform", "load")
+STAGES = ("bronze",)
 
 _KONSOLE_LOG_LEVEL = logging.WARNING
 
@@ -73,9 +73,9 @@ def _kirim(ev: tuple) -> None:
 
 
 def jalankan_sumber(sumber: str, stages: tuple[str, ...] | None = None) -> dict[str, Any]:
-    """Jalankan ETL satu sumber dalam satu worker.
+    """Jalankan bronze (extract) satu sumber dalam satu worker.
 
-    stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
+    stages=None -> bronze; mis. ('bronze',) utk --bronze.
     Mengirimkan event (sumber, STAGE, status, info, detik) ke antrian utama.
     """
     stages = stages or STAGES
@@ -168,7 +168,7 @@ def jalankan_paralel(
 ) -> dict:
     """Jalankan semua sumber aktif secara paralel dengan tampilan live in-place.
 
-    stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
+    stages=None -> bronze; mis. ('bronze',) utk --bronze.
     dry_run -> hanya baca & laporkan, tanpa menulis file/DB.
     """
     stages = stages or STAGES

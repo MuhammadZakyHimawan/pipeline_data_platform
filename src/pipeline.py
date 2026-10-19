@@ -10,64 +10,42 @@ from .shared.config import get_source_config
 
 log = setup_logging()
 
-# Registry pipe: source -> modul extract/transform/load
+# Registry pipe: source -> modul bronze (extract only)
 # Modul ditambahkan bertahap; semua sumber diharapkan mengikuti kontrak:
-#   extract.extract(period=None, dry_run=False) -> dict[dataset, DataFrame]
-#   transform.transform(period=None, dry_run=False) -> dict[dataset, DataFrame]
-#   load.load(period=None, dry_run=False) -> dict[dataset, DataFrame]
+#   bronze.extract(period=None, dry_run=False) -> dict[dataset, DataFrame]
 _PIPES: dict[str, dict] = {
     "bps": {
-        "extract": "src.extract.bps_scraper",
-        "transform": "src.transform.bps_transform",
-        "load": "src.load.bps_load",
+        "bronze": "src.bronze.bps_scraper",
     },
     "kurs": {
-        "extract": "src.extract.kurs_scraper",
-        "transform": "src.transform.kurs_transform",
-        "load": "src.load.kurs_load",
+        "bronze": "src.bronze.kurs_scraper",
     },
     "hari_libur": {
-        "extract": "src.extract.hari_libur_scraper",
-        "transform": "src.transform.hari_libur_transform",
-        "load": "src.load.hari_libur_load",
+        "bronze": "src.bronze.hari_libur_scraper",
     },
     "gdelt": {
-        "extract": "src.extract.gdelt_scraper",
-        "transform": "src.transform.gdelt_transform",
-        "load": "src.load.gdelt_load",
+        "bronze": "src.bronze.gdelt_scraper",
     },
     "cuaca": {
-        "extract": "src.extract.cuaca_scraper",
-        "transform": "src.transform.cuaca_transform",
-        "load": "src.load.cuaca_load",
+        "bronze": "src.bronze.cuaca_scraper",
     },
     "poi": {
-        "extract": "src.extract.poi_scraper",
-        "transform": "src.transform.poi_transform",
-        "load": "src.load.poi_load",
+        "bronze": "src.bronze.poi_scraper",
     },
     "event": {
-        "extract": "src.extract.event_scraper",
-        "transform": "src.transform.event_transform",
-        "load": "src.load.event_load",
+        "bronze": "src.bronze.event_scraper",
     },
     "trends": {
-        "extract": "src.extract.trends_scraper",
-        "transform": "src.transform.trends_transform",
-        "load": "src.load.trends_load",
+        "bronze": "src.bronze.trends_scraper",
     },
     "gmaps": {
-        "extract": "src.extract.gmaps_harga_scraper",
-        "transform": "src.transform.gmaps_harga_transform",
-        "load": "src.load.gmaps_harga_load",
+        "bronze": "src.bronze.gmaps_harga_scraper",
     },
     "traveloka_review": {
-        "extract": "src.extract.traveloka_review_scraper",
+        "bronze": "src.bronze.traveloka_review_scraper",
     },
     "transport": {
-        "extract": "src.extract.transport_scraper",
-        "transform": "src.transform.transport_transform",
-        "load": "src.load.transport_load",
+        "bronze": "src.bronze.transport_scraper",
     },
 }
 
@@ -92,7 +70,7 @@ def get_registered_sources() -> list[str]:
 def get_stage_path(source: str, stage: str) -> str:
     """Path file .py dari registry pipe untuk satu sumber & tahap.
 
-    'src.extract.bps_scraper' -> 'src/extract/bps_scraper.py'
+    'src.bronze.bps_scraper' -> 'src/bronze/bps_scraper.py'
     """
     fqnm = _PIPES.get(source, {}).get(stage, "")
     return fqnm.replace(".", "/") + ".py" if fqnm else f"{stage}/<belum?>.py"
@@ -107,14 +85,14 @@ def run_stage(
     headless_login: bool = False,
     keep_browser_open: bool = False
 ) -> dict:
-    """Jalankan satu tahap (extract/transform/load) untuk satu sumber."""
+    """Jalankan tahap bronze (extract) untuk satu sumber."""
     if source not in _PIPES:
         raise ValueError(
             f"source '{source}' belum terdaftar. Tersedia: {get_registered_sources()} "
             f"| belum diimplementasi: {sorted(PENDING_SOURCES)}"
         )
-    if stage not in ("extract", "transform", "load"):
-        raise ValueError("stage harus salah satu dari: extract, transform, load")
+    if stage != "bronze":
+        raise ValueError("stage saat ini hanya mendukung: bronze")
 
     # validasi periode sejak awal (gdelt: izinkan YYYYMMDD untuk backfill tanggal)
     if source == "gdelt" and period and re.fullmatch(r"\d{8}", period.strip()):
@@ -129,20 +107,15 @@ def run_stage(
     module = _import_module(_PIPES[source][stage])
     start = time.time()
     log.info("=== %s.%s mulai (periode %s) ===", source, stage, period_label)
-    if stage == "extract":
-        sig = inspect.signature(module.extract)
-        kwargs = {"period": period, "dry_run": dry_run}
-        if "force_login" in sig.parameters:
-            kwargs["force_login"] = force_login
-        if "headless_login" in sig.parameters:
-            kwargs["headless_login"] = headless_login
-        if "keep_browser_open" in sig.parameters:
-            kwargs["keep_browser_open"] = keep_browser_open
-        result = module.extract(**kwargs)
-    elif stage == "transform":
-        result = module.transform(period=period, dry_run=dry_run)
-    else:
-        result = module.load(period=period, dry_run=dry_run)
+    sig = inspect.signature(module.extract)
+    kwargs = {"period": period, "dry_run": dry_run}
+    if "force_login" in sig.parameters:
+        kwargs["force_login"] = force_login
+    if "headless_login" in sig.parameters:
+        kwargs["headless_login"] = headless_login
+    if "keep_browser_open" in sig.parameters:
+        kwargs["keep_browser_open"] = keep_browser_open
+    result = module.extract(**kwargs)
     elapsed = time.time() - start
     log.info("=== %s.%s selesai (%.1f dtk, %d dataset) ===", source, stage, elapsed, len(result))
     return result
@@ -155,10 +128,8 @@ def run_pipeline(
     force_login: bool = False,
     headless_login: bool = False
 ) -> dict[str, dict]:
-    """Jalankan ETL penuh (extract -> transform -> load) untuk satu sumber."""
+    """Jalankan pipeline bronze (extract) untuk satu sumber."""
     summary: dict[str, dict] = {}
-    stages = ("extract", "transform", "load")
-    for stage in stages:
-        result = run_stage(source, stage, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login)
-        summary[stage] = {k: len(v) for k, v in result.items()}
+    result = run_stage(source, "bronze", period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login)
+    summary["bronze"] = {k: len(v) for k, v in result.items()}
     return summary
