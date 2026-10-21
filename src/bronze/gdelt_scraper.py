@@ -217,7 +217,7 @@ def extract(period: str | None = None, dry_run: bool = False, backfill: bool = F
     targets = _sasar_hari(period)
 
     # Checkpoint per tanggal (key: YYYY-MM-DD)
-    checkpoint = Checkpoint(SOURCE, backfill=backfill)
+    checkpoint = Checkpoint(SOURCE, backfill=backfill, save_every=1)
     if get_backfill() or backfill:
         sudah = checkpoint.muat()
         targets = [d for d in targets if not checkpoint.sudah(d.isoformat())]

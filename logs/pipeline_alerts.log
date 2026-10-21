@@ -1,0 +1,2 @@
+2026-10-21 13:54:25 | schedule=harian | exit_code=1 | Test alert dari pipeline
+2026-10-21 13:55:51 | schedule=bulanan | exit_code=2 | Test alert dengan env

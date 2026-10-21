@@ -42,6 +42,12 @@ def get_resume() -> bool:
     return _resume
 
 
+def set_resume_in_worker(nilai: bool) -> None:
+    """Set resume flag di worker process (dipanggil via initializer ProcessPoolExecutor)."""
+    global _resume
+    _resume = bool(nilai)
+
+
 def set_backfill(nilai: bool) -> None:
     """Aktifkan mode backfill historis (abaikan validasi tanggal checkpoint)."""
     global _backfill

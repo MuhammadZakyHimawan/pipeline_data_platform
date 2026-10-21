@@ -239,6 +239,9 @@ def jalankan_per_hotel(
                         titik_selesai(baris, hotel)
                     if checkpoint is not None:
                         checkpoint.tandai(hotel.get("id_kompetitor"))
+                        # Force save immediately after each hotel (save_every=1 does this,
+                        # but explicit call ensures it even if threshold changes)
+                        checkpoint.paksa_simpan()
                     progres.catat(len(baris))
             finally:
                 try:

@@ -13,7 +13,25 @@ log = logging.getLogger(__name__)
 # checkpoint dipakai untuk melanjutkan daftar item. Folder ini ikut gitignored
 # bersama data_lake/.
 DIR_STATE = DATA_LAKE_DIR / "_state"
-_SIMPAN_SETIAP = 10
+# Default save threshold (can be overridden per instance)
+_SIMPAN_SETIAP_DEFAULT = 10
+
+# Global registry for signal handler access
+_checkpoint_registry: list["Checkpoint"] = []
+
+
+def register_checkpoint(cp: "Checkpoint") -> None:
+    """Register a checkpoint instance for global signal handler access."""
+    if cp not in _checkpoint_registry:
+        _checkpoint_registry.append(cp)
+
+
+def force_save_all_checkpoints() -> None:
+    """Force save all registered checkpoints (used by signal handler)."""
+    for cp in _checkpoint_registry:
+        if cp._kotor > 0:
+            cp.simpan()
+            log.info("Force-saved checkpoint for %s (%d items)", cp.sumber, len(cp.selesai))
 
 
 class Checkpoint:
@@ -28,7 +46,8 @@ class Checkpoint:
     """
 
     def __init__(self, sumber: str, tanggal: date | None = None, 
-                 backfill: bool = False, tolerance_days: int = 1) -> None:
+                 backfill: bool = False, tolerance_days: int = 1,
+                 save_every: int | None = None) -> None:
         self.sumber = sumber
         self.backfill = backfill
         self.tolerance_days = tolerance_days
@@ -36,6 +55,16 @@ class Checkpoint:
         self.path = DIR_STATE / f"{sumber}.json"
         self.selesai: set[str] = set()
         self._kotor = 0
+        # Allow per-instance save threshold override (e.g., 1 for gmaps)
+        self._save_every = save_every if save_every is not None else _SIMPAN_SETIAP_DEFAULT
+        register_checkpoint(self)
+
+    def __enter__(self) -> "Checkpoint":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._kotor > 0:
+            self.simpan()
 
     def muat(self) -> set[str]:
         """Baca state yang sudah ada; kosongkan bila expired (kecuali backfill).
@@ -91,7 +120,7 @@ class Checkpoint:
     def tandai(self, key: str) -> None:
         self.selesai.add(str(key))
         self._kotor += 1
-        if self._kotor >= _SIMPAN_SETIAP:
+        if self._kotor >= self._save_every:
             self.simpan()
 
     def tandai_kumpulan(self, daftar) -> None:
@@ -115,6 +144,11 @@ class Checkpoint:
             self._kotor = 0
         except OSError as exc:
             log.warning("checkpoint %s gagal ditulis: %s", self.path.name, exc)
+
+    def paksa_simpan(self) -> None:
+        """Force save checkpoint regardless of threshold (for interrupt handling)."""
+        if self._kotor > 0:
+            self.simpan()
 
     def bersihkan(self) -> None:
         try:

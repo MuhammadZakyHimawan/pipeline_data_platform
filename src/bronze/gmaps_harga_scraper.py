@@ -739,7 +739,8 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
     log.info("%s: %d hotel, lead_times=%s",
              SOURCE, len(hotel_list), [s["lead_time"] for s in _lead_time_dates(cfg, date.today())])
 
-    checkpoint = Checkpoint(SOURCE)
+    # save_every=1: simpan checkpoint setelah setiap hotel selesai (aman untuk interrupt)
+    checkpoint = Checkpoint(SOURCE, save_every=1)
     if get_resume():
         sudah = checkpoint.muat()
         hotel_list = [h for h in hotel_list if not checkpoint.sudah(h.get("id_kompetitor"))]

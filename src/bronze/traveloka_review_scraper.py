@@ -427,7 +427,7 @@ def extract_year(
     timeout = int(cfg.get("timeout_seconds", 30))
 
     # Checkpoint for resume
-    checkpoint = Checkpoint(SOURCE)
+    checkpoint = Checkpoint(SOURCE, save_every=1)
     if resume or get_resume():
         sudah = checkpoint.muat()
         target_hotels = [h for h in target_hotels if not checkpoint.sudah(h.get("id_kompetitor"))]

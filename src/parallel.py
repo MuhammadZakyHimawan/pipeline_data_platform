@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import queue as queue_mod
+import signal
+import sys
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -12,7 +14,8 @@ from .pipeline import get_stage_path, run_stage
 from .shared.live_view import RencanaBaris, TampilanPipeline, dukung_live
 from .shared.logging_utils import setup_logging
 from .shared.row_limit import is_limited, set_row_limit
-from .shared.run_options import get_dry_run, set_dry_run
+from .shared.run_options import get_dry_run, set_dry_run, get_resume, set_resume_in_worker
+from .shared.checkpoint import force_save_all_checkpoints
 
 _ANTRIAN: multiprocessing.Queue | None = None
 
@@ -44,6 +47,7 @@ def _init_worker(
     limit: int | None,
     antre_log: bool,
     dry_run: bool = False,
+    resume: bool = False,
 ) -> None:
     """Initializer tiap proses worker: simpan antrian, siapkan logging, limit & dry-run."""
     global _ANTRIAN
@@ -55,6 +59,20 @@ def _init_worker(
         set_row_limit(limit)
     if dry_run:
         set_dry_run(True)
+    if resume:
+        set_resume_in_worker(True)
+    
+    # Signal handler for worker processes (SIGINT/SIGTERM)
+    def _worker_signal_handler(signum, frame):
+        log = logging.getLogger(__name__)
+        signame = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        log.warning("Worker received signal %s, forcing checkpoint save...", signame)
+        force_save_all_checkpoints()
+        sys.exit(128 + signum)
+    
+    signal.signal(signal.SIGINT, _worker_signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, _worker_signal_handler)
 
 
 def _pasang_antrean_log(antrian: multiprocessing.Queue) -> None:
@@ -84,7 +102,7 @@ def jalankan_sumber(sumber: str, stages: tuple[str, ...] | None = None) -> dict[
         _kirim((sumber, stage.upper(), "mulai", None, None))
         mulai = time.time()
         try:
-            result = run_stage(sumber, stage, dry_run=get_dry_run())
+            result = run_stage(sumber, stage, dry_run=get_dry_run(), resume=get_resume())
             n_dataset = len(result)
             n_baris = sum(len(v) for v in result.values())
             detik = round(time.time() - mulai, 1)
@@ -165,11 +183,13 @@ def jalankan_paralel(
     limit: int | None = None,
     stages: tuple[str, ...] | None = None,
     dry_run: bool = False,
+    resume: bool = False,
 ) -> dict:
     """Jalankan semua sumber aktif secara paralel dengan tampilan live in-place.
 
     stages=None -> bronze; mis. ('bronze',) utk --bronze.
     dry_run -> hanya baca & laporkan, tanpa menulis file/DB.
+    resume -> lanjutkan dari checkpoint (pass ke worker processes).
     """
     stages = stages or STAGES
     if dry_run:
@@ -203,12 +223,23 @@ def jalankan_paralel(
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker,
-            initargs=(antrian, limit, antre_log, dry_run),
+            initargs=(antrian, limit, antre_log, dry_run, resume),
         ) as executor:
             futures = [executor.submit(jalankan_sumber, s, stages) for s in sumber_aktif]
             for f in futures:
-                hasil = f.result()
-                per_sumber[hasil["sumber"]]["status"] = hasil["status"]
+                try:
+                    hasil = f.result()
+                    per_sumber[hasil["sumber"]]["status"] = hasil["status"]
+                except KeyboardInterrupt:
+                    log = logging.getLogger(__name__)
+                    log.warning("KeyboardInterrupt in worker result, forcing checkpoint save...")
+                    force_save_all_checkpoints()
+                    raise
+    except KeyboardInterrupt:
+        log = logging.getLogger(__name__)
+        log.warning("KeyboardInterrupt in main process, forcing checkpoint save...")
+        force_save_all_checkpoints()
+        raise
     finally:
         berhenti.set()
         konsumen.join(timeout=10)

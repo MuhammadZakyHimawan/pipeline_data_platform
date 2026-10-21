@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import signal
 import sys
 import time
 from typing import Optional
@@ -30,6 +31,7 @@ from src.shared.run_options import (
     set_resume,
     set_backfill,
 )
+from src.shared.checkpoint import force_save_all_checkpoints
 
 try:
     import typer
@@ -48,7 +50,29 @@ if HAS_TYPER:
             "override lewat env HOTEL_WORKERS). Gunakan 'run <sumber>' utk satu sumber."
         )
     )
-else:
+
+# ============================================================
+# Signal handler untuk graceful shutdown (Ctrl+C / SIGTERM)
+# ============================================================
+def _setup_signal_handlers() -> None:
+    """Register signal handlers for graceful checkpoint saving on interrupt."""
+    def _signal_handler(signum, frame):
+        log = logging.getLogger(__name__)
+        signame = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        log.warning("Interrupt signal %s received, saving checkpoints...", signame)
+        force_save_all_checkpoints()
+        sys.exit(128 + signum)
+
+    # SIGINT (Ctrl+C) - always available
+    signal.signal(signal.SIGINT, _signal_handler)
+    
+    # SIGTERM - may not exist on Windows
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, _signal_handler)
+
+_setup_signal_handlers()
+
+if not HAS_TYPER:
     import argparse
 
 
@@ -494,6 +518,7 @@ def run_all(
     keep_browser_open: bool = False,
     backfill: bool = False,
     historis: bool = False,
+    resume: bool = False,
     pilihan: Optional[list[str]] = None,
 ) -> None:
     """Jalankan seluruh sumber enabled secara paralel (default 4 worker).
@@ -502,10 +527,12 @@ def run_all(
     dry_run=True  -> jalankan tanpa menulis file/DB.
     pilihan=None -> seluruh sumber enabled; pilihan=[...] -> hanya sumber tsb.
     historis=True -> mode historis (backfill penuh dari start_year)
+    resume=True -> lanjutkan dari checkpoint
     """
     set_backfill(backfill)
-    from src.shared.run_options import set_historis
+    from src.shared.run_options import set_historis, set_resume
     set_historis(historis)
+    set_resume(resume)
     setup_logging()
     stages = stages or STAGES
     sumber_aktif, skips = _piih_sumber(pilihan)
@@ -516,6 +543,7 @@ def run_all(
         limit=get_row_limit(),
         stages=stages,
         dry_run=dry_run,
+        resume=resume,
     )
     cetak_ringkasan(per, skips, stages=stages)
 
@@ -529,6 +557,7 @@ def run_single(
     keep_browser_open: bool = False,
     backfill: bool = False,
     historis: bool = False,
+    resume: bool = False,
 ) -> None:
     """Jalankan satu sumber (extract -> transform -> load)."""
     if HAS_TYPER:
@@ -545,8 +574,9 @@ def run_single(
             fg=colors.RED,
         )
         raise SystemExit(1)
-    from src.shared.run_options import set_historis
+    from src.shared.run_options import set_historis, set_resume
     set_historis(historis)
+    set_resume(resume)
     _run_sources([source], stages, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open, backfill=backfill)
 
 
@@ -572,19 +602,19 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
             if opsi.sumber is None:
                 if not opsi.test:
                     set_row_limit(None)
-                run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, pilihan=pilihan)
+                run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, resume=opsi.resume, pilihan=pilihan)
             else:
                 # schedule + explicit source flag (should not happen due to validation, but handle anyway)
-                run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
+                run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, resume=opsi.resume)
             return
 
     if not opsi.sisa:
         if opsi.sumber is None:
             if not opsi.test:
                 set_row_limit(None)
-            run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
+            run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, resume=opsi.resume)
         else:
-            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
+            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, resume=opsi.resume)
         return
 
     pintasan = _parse_shortcut(opsi.sisa)
@@ -611,9 +641,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     if limit is not None:
         set_row_limit(limit)
     if target is None:
-        run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, historis=opsi.historis)
+        run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, historis=opsi.historis, resume=opsi.resume)
     else:
-        run_single(target, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, historis=opsi.historis)
+        run_single(target, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, historis=opsi.historis, resume=opsi.resume)
 
 
 def main() -> None:
@@ -627,9 +657,9 @@ def main() -> None:
         if limit is not None:
             set_row_limit(limit)
         if target is None:
-            run_all(historis=opsi.historis)
+            run_all(historis=opsi.historis, resume=opsi.resume)
         else:
-            run_single(target, historis=opsi.historis)
+            run_single(target, historis=opsi.historis, resume=opsi.resume)
         return
     if len(sys.argv) <= 1:
         run_all()

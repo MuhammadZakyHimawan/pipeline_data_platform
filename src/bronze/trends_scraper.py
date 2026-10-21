@@ -238,7 +238,7 @@ def extract(period: str | None = None, dry_run: bool = False, backfill: bool = F
         return {}
 
     # Checkpoint per destinasi (composite key: nama|geo)
-    checkpoint = Checkpoint(SOURCE, backfill=backfill)
+    checkpoint = Checkpoint(SOURCE, backfill=backfill, save_every=1)
     if get_backfill() or backfill:
         sudah = checkpoint.muat()
         destinasi = [(n, k) for n, k in destinasi if not checkpoint.sudah(f"{n}|{geo}")]
