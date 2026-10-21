@@ -8,9 +8,10 @@ from typing import Any
 import pandas as pd
 import requests
 
-from ..shared.periods import resolve_years
+from ..shared.periods import resolve_years, resolve_daily_period, resolve_historical_period
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.run_options import get_historis
 
 log = logging.getLogger(__name__)
 
@@ -70,11 +71,21 @@ def _ambil_kalender(url: str, retries: int = 3) -> str:
     raise RuntimeError(f"Gagal mengambil kalender libur dari {url}")
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): semua VEVENT dari kalender libur Indonesia.
 
     Ditulis satu file per tahun: data_lake/bronze/hari_libur/hari_libur/{YYYY}.parquet
-    """
+    
+    Mode Tahunan/Harian (default): hanya tahun berjalan
+    Mode Historis (--historis): full kalender arsip"""
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("hari_libur: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("hari_libur: MODE TAHUNAN/HARIAN aktif, periode=%s", period)
+
     if period and period.strip().lower() not in ("", "latest", "terbaru"):
         log.info("hari_libur: periode=%s (filter tahun dipakai)", period)
 

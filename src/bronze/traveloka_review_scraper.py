@@ -16,10 +16,10 @@ import requests
 from ..shared.checkpoint import Checkpoint
 from ..shared.config import get_source_config
 from ..shared.db import fetch_df, table_exists
-from ..shared.periods import resolve_months
+from ..shared.periods import resolve_months, resolve_daily_period, resolve_historical_period
 from ..shared.row_limit import get_row_limit, truncate_df
-from ..shared.run_options import get_resume
 from ..shared.storage import write_parquet, write_parquet_by_year
+from ..shared.run_options import get_historis
 
 # Playwright untuk bypass anti-bot
 try:
@@ -508,10 +508,23 @@ def extract(
     dry_run: bool = False,
     force_login: bool = False,
     headless_login: bool = False,
-    keep_browser_open: bool = False
+    keep_browser_open: bool = False,
+    historis: bool = False
 ) -> dict[str, pd.DataFrame]:
-    """EXTRACT (bronze): Traveloka reviews per hotel -> data_lake/bronze/traveloka_review/review/{YYYY-MM}.parquet"""
+    """EXTRACT (bronze): Traveloka reviews per hotel -> data_lake/bronze/traveloka_review/review/{YYYY-MM}.parquet
+    
+    Mode Bulanan/Harian (default): hanya bulan berjalan
+    Mode Historis (--historis): semua bulan dari start_year s.d. hari ini"""
     cfg = get_source_config(SOURCE)
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("traveloka_review: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("traveloka_review: MODE BULANAN/HARIAN aktif, periode=%s", period)
+    
     bulan_ini = resolve_months(period)[0]
 
     target_hotels = _get_traveloka_hotels(cfg)

@@ -63,6 +63,7 @@ sources:
     schedule: harian
     period: latest
     grain: year
+    start_year: 2014
 
   trends:
     enabled: true
@@ -71,6 +72,7 @@ sources:
     grain: year
     playwright_required: true
     geo: ID
+    start_year: 2014
     # Optional: override rentang Trends (format "YYYY-MM-DD YYYY-MM-DD").
     # Default jika dikosongkan = 10 tahun terakhir s.d. hari ini.
     range: ""
@@ -182,6 +184,7 @@ sources:
     max_pages_per_hotel: 50
     request_delay_seconds: 1.0
     timeout_seconds: 30
+    start_year: 2020
 
   transport:
     enabled: true
@@ -204,15 +207,18 @@ sources:
     schedule: tahunan
     period: latest
     grain: year
+    start_year: 2016
 
   kurs:
     enabled: true
     schedule: harian
     period: latest
     grain: year
+    start_year: 2014
 
   event:
     enabled: true
     schedule: harian
     period: latest
     grain: year
+    start_year: 2014

@@ -13,9 +13,10 @@ def resolve_period(period: str | None) -> tuple[str, list[int]]:
         - years: daftar tahun untuk BPS (fetch per tahun)
 
     Didukung:
-        - "latest" / None  -> tahun berjalan (periode terbaru)
-        - "2025"           -> satu tahun
-        - "2020-2026"      -> rentang tahun (backfill)
+        - "latest" / None     -> tahun berjalan (periode terbaru)
+        - "2025"              -> satu tahun
+        - "2020-2026"         -> rentang tahun (backfill)
+        - "2026-10-21"        -> tanggal spesifik (mode harian)
     """
     now_year = datetime.now().year
 
@@ -23,6 +24,10 @@ def resolve_period(period: str | None) -> tuple[str, list[int]]:
         return str(now_year), [now_year]
 
     period = period.strip()
+
+    # Handle YYYY-MM-DD (single day from daily mode)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+        return period, [int(period[:4])]
 
     if re.fullmatch(r"\d{4}", period):
         y = int(period)
@@ -35,7 +40,7 @@ def resolve_period(period: str | None) -> tuple[str, list[int]]:
         return f"{a}-{b}", list(range(a, b + 1))
 
     raise ValueError(
-        f"periode tidak dikenal: '{period}'. Gunakan 'latest', 'YYYY', atau 'YYYY-YYYY'."
+        f"periode tidak dikenal: '{period}'. Gunakan 'latest', 'YYYY', 'YYYY-YYYY', atau 'YYYY-MM-DD'."
     )
 
 
@@ -44,9 +49,10 @@ def resolve_years(period: str | None) -> list[int]:
 
     Dipakai sumber yang menulis satu file per tahun dan butuh daftar tahun
     eksplisit (mis. backfill BPS '2020-2024'):
-        - "2025"        -> [2025]
-        - "2020-2024"   -> [2020, 2021, 2022, 2023, 2024]
-        - None/latest   -> tahun berjalan
+        - "2025"           -> [2025]
+        - "2020-2024"      -> [2020, 2021, 2022, 2023, 2024]
+        - "2026-10-21"     -> [2026] (tanggal spesifik, ambil tahun nya)
+        - None/latest      -> tahun berjalan
     """
     now_year = datetime.now().year
 
@@ -54,6 +60,10 @@ def resolve_years(period: str | None) -> list[int]:
         return [now_year]
 
     period = period.strip()
+
+    # Handle YYYY-MM-DD (single day from daily mode) - extract year
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+        return [int(period[:4])]
 
     if re.fullmatch(r"\d{4}", period):
         return [int(period)]
@@ -65,7 +75,7 @@ def resolve_years(period: str | None) -> list[int]:
         return list(range(a, b + 1))
 
     raise ValueError(
-        f"periode tidak dikenal: '{period}'. Gunakan 'latest', 'YYYY', atau 'YYYY-YYYY'."
+        f"periode tidak dikenal: '{period}'. Gunakan 'latest', 'YYYY', 'YYYY-YYYY', atau 'YYYY-MM-DD'."
     )
 
 
@@ -117,3 +127,110 @@ def _validasi_bulan(periode: str) -> None:
     bulan = int(periode.split("-")[1])
     if not 1 <= bulan <= 12:
         raise ValueError(f"bulan tidak valid: '{periode}'. Bulan harus 01-12.")
+
+
+def get_start_year(source: str, default: int = 2014) -> int:
+    """Ambil start_year dari config sources.yaml untuk sumber tertentu."""
+    from .config import get_source_config
+    try:
+        return int(get_source_config(source).get("start_year", default))
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_daily_period(source: str) -> str:
+    """Return period string for DAILY mode based on source type.
+    
+    Daily mode = only process today (or yesterday for GDELT).
+    """
+    from datetime import date, timedelta
+    from .run_options import get_historis
+    
+    # If historis mode is explicitly set, return None to use default/historical logic
+    if get_historis():
+        return None
+    
+    today = date.today()
+    
+    if source == "gdelt":
+        # GDELT: yesterday's data (today's data usually incomplete)
+        return (today - timedelta(days=1)).strftime("%Y%m%d")
+    elif source == "kurs":
+        # Kurs: single day (today)
+        return today.isoformat()
+    elif source == "cuaca":
+        # Cuaca: single day (today)
+        return today.isoformat()
+    elif source == "trends":
+        # Trends: single day range (today today)
+        return f"{today.isoformat()} {today.isoformat()}"
+    elif source == "bps":
+        # BPS: current year only (no daily granularity)
+        return str(today.year)
+    elif source == "event":
+        # Event: today only
+        return today.isoformat()
+    elif source in ("poi", "transport"):
+        # POI/Transport: snapshot sources, skip in daily mode
+        return "skip"
+    elif source == "hari_libur":
+        # Hari libur: current year only in daily/tahunan mode
+        return str(today.year)
+    elif source == "traveloka_review":
+        # Traveloka review: current month only
+        return f"{today.year:04d}-{today.month:02d}"
+    elif source == "gmaps":
+        # Gmaps: ignores period, uses date.today() internally for lead-times
+        return None
+    
+    return None
+
+
+def resolve_historical_period(source: str) -> str:
+    """Return period string for HISTORICAL mode based on source type.
+    
+    Historical mode = full backfill from start_year to today.
+    """
+    from datetime import date
+    from .run_options import get_historis
+    
+    # Only apply if historis mode is set
+    if not get_historis():
+        return None
+    
+    today = date.today()
+    start_year = get_start_year(source)
+    
+    if source == "gdelt":
+        # GDELT: full range from start_year
+        return f"{start_year}-{today.year}"
+    elif source == "kurs":
+        return f"{start_year}-{today.year}"
+    elif source == "cuaca":
+        return f"{start_year}-{today.year}"
+    elif source == "trends":
+        # Trends: use config range or default 10 years
+        from .config import get_source_config
+        cfg = get_source_config(source)
+        cfg_range = str(cfg.get("range") or "").strip()
+        if cfg_range:
+            return cfg_range
+        # Default 10 years back
+        return f"{today.year - 10}-{today.year}"
+    elif source == "bps":
+        return f"{start_year}-{today.year}"
+    elif source == "event":
+        return f"{start_year}-{today.year}"
+    elif source in ("poi", "transport"):
+        # POI/Transport: full refresh
+        return "latest"
+    elif source == "hari_libur":
+        return "latest"  # Full ICS parse
+    elif source == "traveloka_review":
+        # Traveloka review: all months from start_year
+        return f"{start_year}-{today.year}"
+    elif source == "gmaps":
+        # Gmaps: no historical concept, uses date.today() internally
+        return None
+    
+    return "latest"

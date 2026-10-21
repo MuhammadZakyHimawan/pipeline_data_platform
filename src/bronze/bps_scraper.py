@@ -9,9 +9,10 @@ import pandas as pd
 import requests
 
 from ..shared.config import get_bps_api_key, get_source_config
-from ..shared.periods import resolve_years
+from ..shared.periods import resolve_years, resolve_daily_period, resolve_historical_period
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.run_options import get_historis
 
 log = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ def extract_dataset(
     return rows
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT semua dataset BPS -> data_lake/bronze/bps/{dataset}/{YYYY}.parquet
 
     Default ('latest'): tarik riwayat penuh tiap dataset dari start_year s.d. tahun
@@ -154,7 +155,9 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
 
     Periode eksplisit ('YYYY' atau 'YYYY-YYYY') membatasi tahun yang ditarik;
     file per tahun yang sudah ada tidak dihapus/diubah di luar rentang itu.
-    """
+    
+    Mode Harian (default): hanya tahun berjalan (current year)
+    Mode Historis (--historis): full backfill dari start_year s.d. tahun berjalan"""
     api_key = get_bps_api_key()
     if not api_key:
         raise RuntimeError(
@@ -164,6 +167,14 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
     src_cfg = get_source_config(SOURCE)
     now_year = datetime.now().year
     log.info("bps extract: tahun berjalan=%s", now_year)
+
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("bps: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("bps: MODE HARIAN aktif, periode=%s", period)
 
     # Periode eksplisit? (bukan None / latest / kosong)
     p = (period or "").strip()

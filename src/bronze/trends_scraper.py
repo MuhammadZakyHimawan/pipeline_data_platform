@@ -14,7 +14,8 @@ from ..shared.config import get_source_config
 from ..shared.row_limit import get_row_limit, truncate_df
 from ..shared.storage import write_parquet_by_year
 from ..shared.checkpoint import Checkpoint
-from ..shared.run_options import get_backfill
+from ..shared.run_options import get_backfill, get_historis
+from ..shared.periods import resolve_daily_period, resolve_historical_period
 
 log = logging.getLogger(__name__)
 
@@ -209,16 +210,27 @@ def _scrap_tren(page, nama_destinasi: str, geo: str, rentang: str) -> list[dict]
         page.remove_listener("response", handler)
 
 
-def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): interest-over-time Google Trends per destinasi dari config.
 
     Bronze ditulis per tahun (grain: year): {dataset}/{YYYY}.parquet.
-    """
+    
+    Mode Harian (default): hanya hari ini (date.today())
+    Mode Historis (--historis): full backfill dari config 'range' atau 10 tahun default"""
     cfg = get_source_config(SOURCE)
     geo = str(cfg.get("geo", "ID")).strip().upper()
     jeda = int(cfg.get("jeda_antar_destinasi", 20))
     headless = bool(cfg.get("headless", True))
-    rentang = _rentang_tren(cfg)
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("trends: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("trends: MODE HARIAN aktif, periode=%s", period)
+    
+    rentang = _rentang_tren(cfg) if period is None else period
 
     destinasi = _daftar_destinasi(cfg)
     if not destinasi:

@@ -15,7 +15,8 @@ from ..shared.config import get_source_config
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
 from ..shared.checkpoint import Checkpoint
-from ..shared.run_options import get_backfill
+from ..shared.run_options import get_backfill, get_historis
+from ..shared.periods import resolve_daily_period, resolve_historical_period
 
 log = logging.getLogger(__name__)
 
@@ -192,18 +193,27 @@ def _ambil_satu_hari(target: date, max_window: int) -> list[dict[str, Any]]:
     return rows
 
 
-def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): GDELT 2.0 per window, hanya event lokasi Indonesia.
 
     Bronze ditulis **satu file per tahun**: {berita}/{YYYY}.parquet, mode append
     dengan dedupe `global_event_id`, sehingga run harian menumpuk ke file tahun
     yang sama tanpa menghasilkan baris duplikat.
 
-    Default ('latest') hanya menarik kemarin. Backfill satu tahun penuh
-    ('YYYY' / 'YYYY-YYYY') = ~365 hari x max_window permintaan, jadi lambat.
+    Mode Harian (default): hanya kemarin (date.today() - 1)
+    Mode Historis (--historis): full backfill dari start_year s.d. hari ini
     """
     cfg = get_source_config(SOURCE)
     max_window = int(cfg.get("max_window", MAKS_WINDOW))
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("gdelt: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("gdelt: MODE HARIAN aktif, periode=%s", period)
+    
     targets = _sasar_hari(period)
 
     # Checkpoint per tanggal (key: YYYY-MM-DD)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
@@ -10,9 +11,10 @@ import pandas as pd
 import requests
 
 from ..shared.config import get_source_config
-from ..shared.periods import resolve_period
+from ..shared.periods import resolve_period, resolve_daily_period, resolve_historical_period
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.run_options import get_historis
 
 log = logging.getLogger(__name__)
 
@@ -85,13 +87,22 @@ def _resolve_tanggal(period: str | None, years: list[int], period_label: str) ->
     """Tentukan daftar tanggal yang akan di-extract.
 
     - 'latest'/None           -> 7 hari terakhir (hari ini + 6 hari sebelumnya)
+    - 'YYYY-MM-DD'            -> satu tanggal spesifik (mode harian)
     - 'YYYY' atau 'YYYY-YYYY' -> seluruh hari dalam tahun (backfill)
     """
+    from datetime import datetime
     today = date.today()
+    
     if period is None or period.strip().lower() in ("", "latest", "terbaru"):
         mulai = today - timedelta(days=6)
         return [mulai + timedelta(days=i) for i in range((today - mulai).days + 1)]
-
+    
+    # Handle YYYY-MM-DD (single day from daily mode)
+    p = period.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p):
+        target_date = datetime.strptime(p, "%Y-%m-%d").date()
+        return [target_date]
+    
     tanggal_list: list[date] = []
     for year in years:
         start = date(year, 1, 1)
@@ -103,11 +114,23 @@ def _resolve_tanggal(period: str | None, years: list[int], period_label: str) ->
     return tanggal_list
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): kurs BI per hari -> data_lake/bronze/kurs/kurs/{YYYY}.parquet
 
-    Satu file per tahun (kolom `tanggal` menentukan filenya)."""
+    Satu file per tahun (kolom `tanggal` menentukan filenya).
+    
+    Mode Harian (default): hanya hari ini (date.today())
+    Mode Historis (--historis): full backfill dari start_year s.d. hari ini"""
     cfg = get_source_config(SOURCE)
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("kurs: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("kurs: MODE HARIAN aktif, periode=%s", period)
+    
     period_label, years = resolve_period(period or cfg.get("period"))
     tanggal_list = _resolve_tanggal(period or cfg.get("period"), years, period_label)
 

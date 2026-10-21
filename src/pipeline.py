@@ -84,7 +84,8 @@ def run_stage(
     force_login: bool = False,
     headless_login: bool = False,
     keep_browser_open: bool = False,
-    backfill: bool = False
+    backfill: bool = False,
+    historis: bool = False
 ) -> dict:
     """Jalankan tahap bronze (extract) untuk satu sumber."""
     if source not in _PIPES:
@@ -107,7 +108,7 @@ def run_stage(
 
     module = _import_module(_PIPES[source][stage])
     start = time.time()
-    log.info("=== %s.%s mulai (periode %s) ===", source, stage, period_label)
+    log.info("=== %s.%s mulai (periode %s, historis=%s) ===", source, stage, period_label, historis)
     sig = inspect.signature(module.extract)
     kwargs = {"period": period, "dry_run": dry_run}
     if "force_login" in sig.parameters:
@@ -118,6 +119,8 @@ def run_stage(
         kwargs["keep_browser_open"] = keep_browser_open
     if "backfill" in sig.parameters:
         kwargs["backfill"] = backfill
+    if "historis" in sig.parameters:
+        kwargs["historis"] = historis
     result = module.extract(**kwargs)
     elapsed = time.time() - start
     log.info("=== %s.%s selesai (%.1f dtk, %d dataset) ===", source, stage, elapsed, len(result))
@@ -130,10 +133,11 @@ def run_pipeline(
     dry_run: bool = False,
     force_login: bool = False,
     headless_login: bool = False,
-    backfill: bool = False
+    backfill: bool = False,
+    historis: bool = False
 ) -> dict[str, dict]:
     """Jalankan pipeline bronze (extract) untuk satu sumber."""
     summary: dict[str, dict] = {}
-    result = run_stage(source, "bronze", period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, backfill=backfill)
+    result = run_stage(source, "bronze", period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, backfill=backfill, historis=historis)
     summary["bronze"] = {k: len(v) for k, v in result.items()}
     return summary

@@ -15,6 +15,8 @@ from bs4 import BeautifulSoup
 from ..shared.config import get_source_config
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.periods import resolve_daily_period, resolve_historical_period
+from ..shared.run_options import get_historis
 
 log = logging.getLogger(__name__)
 
@@ -726,14 +728,64 @@ PEKERJA = {
 }
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def _parse_event_period(period: str | None) -> tuple[date | None, date | None]:
+    """Parse period string for event scraper.
+    
+    Returns:
+        (start_date, end_date) tuple for filtering events.
+        - None, None = no filtering (historical mode)
+        - target_date, target_date = single day (daily mode YYYY-MM-DD)
+        - start_date, end_date = range (if extended in future)
+    """
+    from datetime import datetime
+    if period is None:
+        return None, None
+    
+    p = period.strip().lower()
+    if p in ("", "latest", "terbaru"):
+        return None, None
+    
+    # Handle YYYY-MM-DD (single day from daily mode)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p):
+        target_date = datetime.strptime(p, "%Y-%m-%d").date()
+        return target_date, target_date
+    
+    # Handle YYYY-YYYY (year range) - future extension
+    if re.fullmatch(r"\d{4}-\d{4}", p):
+        a, b = map(int, p.split("-"))
+        return date(a, 1, 1), date(b, 12, 31)
+    
+    # Handle YYYY (single year) - future extension
+    if re.fullmatch(r"\d{4}", p):
+        y = int(p)
+        return date(y, 1, 1), date(y, 12, 31)
+    
+    return None, None
+
+
+def extract(period: str | None = None, dry_run: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): event dari 6 situs venue (JIExpo, ICE, NICE, JCC, Eventbrite, Jakarta).
 
     Bronze ditulis per tahun (grain: year) berdasarkan tanggal_mulai event,
     mode append: listing situs hanya memuat event mendatang, jadi event yang
     sudah lewat harus tetap tersimpan.
+    
+    Mode Harian (default): ambil SEMUA event yang terdeteksi hari ini (upcoming/past),
+    tidak filter by tanggal pelaksanaan. Dedup otomatis via append + dedup_cols.
+    Mode Historis (--historis): semua event dari start_year s.d. hari ini.
     """
     cfg = get_source_config(SOURCE)
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("event: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("event: MODE HARIAN aktif, periode=%s", period)
+    
+    # Parse period for potential date filtering
+    filter_start, filter_end = _parse_event_period(period)
 
     daftar_event: list[dict[str, Any]] = []
     workers = int(cfg.get("event_workers", 6))
@@ -752,6 +804,13 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
         return {}
 
     df = pd.DataFrame(daftar_event, columns=KOLOM_BRONZE)
+    
+    # Daily mode: capture ALL events visible today (upcoming/past).
+    # Do NOT filter by event date (tanggal_mulai) - sources return upcoming events
+    # that are newly published. Deduplication via write_parquet_by_year(mode="append",
+    # dedup_cols=...) handles incremental updates correctly.
+    # Historical mode (--historis) also skips this filter since filter_start=None.
+    
     df = truncate_df(df)
     if dry_run:
         log.info("[dry-run] event bronze: %d baris (tidak ditulis)", len(df))

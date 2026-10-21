@@ -9,6 +9,7 @@ _dry_run: bool = False
 _headful: bool = False
 _resume: bool = False
 _backfill: bool = False
+_historis: bool = False
 
 
 def set_dry_run(nilai: bool) -> None:
@@ -49,3 +50,13 @@ def set_backfill(nilai: bool) -> None:
 
 def get_backfill() -> bool:
     return _backfill
+
+
+def set_historis(nilai: bool) -> None:
+    """Aktifkan mode historis (backfill penuh dari start_year config)."""
+    global _historis
+    _historis = bool(nilai)
+
+
+def get_historis() -> bool:
+    return _historis

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -10,6 +11,8 @@ import requests
 from ..shared.config import get_source_config
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.periods import resolve_daily_period, resolve_historical_period
+from ..shared.run_options import get_historis
 
 log = logging.getLogger(__name__)
 
@@ -39,15 +42,22 @@ def _resolve_rentang(period: str | None, cfg: dict) -> tuple[date, date, str]:
     """Tentukan rentang tanggal & label parquet.
 
     - 'latest' (default)        -> 10 tahun terakhir (1 Jan tahun-10) s.d. hari ini, label = tahun berjalan
+    - 'YYYY-MM-DD'              -> satu tanggal spesifik (mode harian)
     - 'YYYY'                    -> 1 Jan s.d. 31 Des tahun tersebut (dibatasi hari ini)
     - 'YYYY-YYYY'               -> rentang tahun (label gabungan)
     """
+    from datetime import datetime
     today = date.today()
     s = (period or cfg.get("period", "latest")).strip().lower()
 
     if s in ("", "latest", "terbaru"):
         mulai = date(today.year - 10, 1, 1)
         return mulai, today, str(today.year)
+
+    # Handle YYYY-MM-DD (single day from daily mode)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        target_date = datetime.strptime(s, "%Y-%m-%d").date()
+        return target_date, target_date, s
 
     if s.isdigit() and len(s) == 4:  # tahun
         y = int(s)
@@ -57,7 +67,7 @@ def _resolve_rentang(period: str | None, cfg: dict) -> tuple[date, date, str]:
         a, b = (int(x) for x in s.split("-"))
         return date(a, 1, 1), min(date(b, 12, 31), today), f"{a}-{b}"
 
-    raise ValueError(f"periode cuaca tidak dikenal: '{period}'. Gunakan latest | YYYY | YYYY-YYYY")
+    raise ValueError(f"periode cuaca tidak dikenal: '{period}'. Gunakan latest | YYYY-MM-DD | YYYY | YYYY-YYYY")
 
 
 def _ekstrak_wilayah(
@@ -108,9 +118,21 @@ def _ekstrak_wilayah(
 
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
-    """EXTRACT (bronze): cuaca hourly 5 wilayah -> data_lake/bronze/cuaca/cuaca/{YYYY}.parquet"""
+def extract(period: str | None = None, dry_run: bool = False, historis: bool = False) -> dict[str, pd.DataFrame]:
+    """EXTRACT (bronze): cuaca hourly 5 wilayah -> data_lake/bronze/cuaca/cuaca/{YYYY}.parquet
+    
+    Mode Harian (default): hanya hari ini (date.today())
+    Mode Historis (--historis): full backfill dari start_year s.d. hari ini"""
     cfg = get_source_config(SOURCE)
+    
+    # Determine period based on mode
+    if historis or get_historis():
+        period = resolve_historical_period(SOURCE)
+        log.info("cuaca: MODE HISTORIS aktif, periode=%s", period)
+    else:
+        period = resolve_daily_period(SOURCE)
+        log.info("cuaca: MODE HARIAN aktif, periode=%s", period)
+    
     mulai, akhir, label = _resolve_rentang(period, cfg)
     log.info("cuaca extract: rentang %s s.d. %s (label %s)", mulai, akhir, label)
 

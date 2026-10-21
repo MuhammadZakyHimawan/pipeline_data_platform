@@ -186,6 +186,7 @@ class OpsiCLI:
         self.stages: tuple[str, ...] | None = None
         self.sumber: str | None = None
         self.schedule: str | None = None
+        self.historis: bool = False
         self.dry_run: bool = False
         self.headful: bool = False
         self.resume: bool = False
@@ -201,6 +202,7 @@ class OpsiCLI:
             self.stages is not None
             or self.sumber is not None
             or self.schedule is not None
+            or self.historis
             or self.dry_run
             or self.headful
             or self.resume
@@ -222,6 +224,7 @@ _UJI_FLAG = {
     "--headless": "headless_login",
     "--keep-browser-open": "keep_browser_open",
     "--backfill": "backfill",
+    "--historis": "historis",
 }
 
 # Flag schedule: grouping berdasarkan frekuensi
@@ -490,6 +493,7 @@ def run_all(
     headless_login: bool = False,
     keep_browser_open: bool = False,
     backfill: bool = False,
+    historis: bool = False,
     pilihan: Optional[list[str]] = None,
 ) -> None:
     """Jalankan seluruh sumber enabled secara paralel (default 4 worker).
@@ -497,8 +501,11 @@ def run_all(
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
     dry_run=True  -> jalankan tanpa menulis file/DB.
     pilihan=None -> seluruh sumber enabled; pilihan=[...] -> hanya sumber tsb.
+    historis=True -> mode historis (backfill penuh dari start_year)
     """
     set_backfill(backfill)
+    from src.shared.run_options import set_historis
+    set_historis(historis)
     setup_logging()
     stages = stages or STAGES
     sumber_aktif, skips = _piih_sumber(pilihan)
@@ -521,6 +528,7 @@ def run_single(
     headless_login: bool = False,
     keep_browser_open: bool = False,
     backfill: bool = False,
+    historis: bool = False,
 ) -> None:
     """Jalankan satu sumber (extract -> transform -> load)."""
     if HAS_TYPER:
@@ -537,6 +545,8 @@ def run_single(
             fg=colors.RED,
         )
         raise SystemExit(1)
+    from src.shared.run_options import set_historis
+    set_historis(historis)
     _run_sources([source], stages, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open, backfill=backfill)
 
 
@@ -545,6 +555,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     set_dry_run(opsi.dry_run)
     set_headful(opsi.headful)
     set_resume(opsi.resume)
+    # Auto-enable backfill when historis mode is active
+    if opsi.historis:
+        opsi.backfill = True
     set_backfill(opsi.backfill)
     if opsi.test:
         set_test()
@@ -559,19 +572,19 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
             if opsi.sumber is None:
                 if not opsi.test:
                     set_row_limit(None)
-                run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, pilihan=pilihan)
+                run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis, pilihan=pilihan)
             else:
                 # schedule + explicit source flag (should not happen due to validation, but handle anyway)
-                run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill)
+                run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
             return
 
     if not opsi.sisa:
         if opsi.sumber is None:
             if not opsi.test:
                 set_row_limit(None)
-            run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
+            run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
         else:
-            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
+            run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, historis=opsi.historis)
         return
 
     pintasan = _parse_shortcut(opsi.sisa)
@@ -598,9 +611,9 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     if limit is not None:
         set_row_limit(limit)
     if target is None:
-        run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open)
+        run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, historis=opsi.historis)
     else:
-        run_single(target, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login)
+        run_single(target, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, historis=opsi.historis)
 
 
 def main() -> None:
@@ -614,9 +627,9 @@ def main() -> None:
         if limit is not None:
             set_row_limit(limit)
         if target is None:
-            run_all()
+            run_all(historis=opsi.historis)
         else:
-            run_single(target)
+            run_single(target, historis=opsi.historis)
         return
     if len(sys.argv) <= 1:
         run_all()
