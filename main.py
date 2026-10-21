@@ -15,7 +15,7 @@ from src.pipeline import (
     run_stage,
 )
 from src.shared.db import ensure_schema
-from src.shared.config import get_db_config, get_source_config
+from src.shared.config import get_db_config, get_source_config, get_sources_by_schedule
 from src.shared.live_view import (
     RencanaBaris,
     TampilanPipeline,
@@ -28,6 +28,7 @@ from src.shared.run_options import (
     set_dry_run,
     set_headful,
     set_resume,
+    set_backfill,
 )
 
 try:
@@ -65,6 +66,16 @@ if HAS_TYPER:
         ensure_schema(config["schema_gold"])
         typer.echo(f"Schema '{config['schema_gold']}' siap di {config['host']}:{config['port']}/{config['name']}")
 
+    @app.command("checkpoint-clear")
+    def checkpoint_clear(
+        source: str = typer.Argument(..., help="Nama sumber (contoh: gmaps, trends)"),
+    ) -> None:
+        """Hapus checkpoint state untuk sumber tertentu."""
+        from src.shared.checkpoint import Checkpoint
+        cp = Checkpoint(source)
+        cp.bersihkan()
+        typer.echo(f"Checkpoint untuk '{source}' dibersihkan.")
+
     @app.command("run")
     def run(
         source: str = typer.Argument(..., help="Nama sumber (contoh: bps)"),
@@ -74,10 +85,12 @@ if HAS_TYPER:
         force_login: bool = typer.Option(False, "--force-login", help="Login fresh via browser"),
         headless_login: bool = typer.Option(False, "--headless", help="Login tanpa UI (headless)"),
         keep_browser_open: bool = typer.Option(False, "--keep-browser-open", help="Jaga browser terbuka setelah login"),
+        backfill: bool = typer.Option(False, "--backfill", help="Mode backfill historis (abaikan validasi tanggal checkpoint)"),
     ) -> None:
         """Jalankan pipeline bronze (extract) untuk satu sumber."""
         logger = setup_logging()
         try:
+            set_backfill(backfill)
             if stage == "all":
                 summary = run_pipeline(source, period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
                 logger.info("Pipeline '%s' selesai: %s", source, summary)
@@ -106,6 +119,7 @@ def _run_argparse() -> None:
     p_run.add_argument("--force-login", action="store_true", help="Login fresh via browser")
     p_run.add_argument("--headless", action="store_true", help="Login tanpa UI (headless)")
     p_run.add_argument("--keep-browser-open", action="store_true", help="Jaga browser terbuka setelah login")
+    p_run.add_argument("--backfill", action="store_true", help="Mode backfill historis (abaikan validasi tanggal checkpoint)")
 
     args = parser.parse_args()
     logger = setup_logging()
@@ -118,6 +132,7 @@ def _run_argparse() -> None:
         print(f"Schema '{config['schema_gold']}' siap di {config['host']}:{config['port']}/{config['name']}")
     elif args.command == "run":
         try:
+            set_backfill(args.backfill)
             if args.stage == "all":
                 summary = run_pipeline(args.source, period=args.period, dry_run=args.dry_run, force_login=args.force_login, headless_login=args.headless, keep_browser_open=args.keep_browser_open)
                 logger.info("Pipeline '%s' selesai: %s", args.source, summary)
@@ -170,6 +185,7 @@ class OpsiCLI:
         self.sisa: list[str] = []
         self.stages: tuple[str, ...] | None = None
         self.sumber: str | None = None
+        self.schedule: str | None = None
         self.dry_run: bool = False
         self.headful: bool = False
         self.resume: bool = False
@@ -177,12 +193,14 @@ class OpsiCLI:
         self.force_login: bool = False
         self.headless_login: bool = False
         self.keep_browser_open: bool = False
+        self.backfill: bool = False
 
     @property
     def pakai_pintasan(self) -> bool:
         return (
             self.stages is not None
             or self.sumber is not None
+            or self.schedule is not None
             or self.dry_run
             or self.headful
             or self.resume
@@ -190,6 +208,7 @@ class OpsiCLI:
             or self.force_login
             or self.headless_login
             or self.keep_browser_open
+            or self.backfill
         )
 
 
@@ -202,11 +221,19 @@ _UJI_FLAG = {
     "--force-login": "force_login",
     "--headless": "headless_login",
     "--keep-browser-open": "keep_browser_open",
+    "--backfill": "backfill",
+}
+
+# Flag schedule: grouping berdasarkan frekuensi
+_SCHEDULE_FLAG = {
+    "--harian": "harian",
+    "--bulanan": "bulanan",
+    "--tahunan": "tahunan",
 }
 
 
 def _urai_flag(args: list[str]) -> OpsiCLI:
-    """Pisahkan flag pintasan (tahap/sumber/uji) dari argumen lain.
+    """Pisahkan flag pintasan (tahap/sumber/uji/schedule) dari argumen lain.
 
     Flag yang dikenali:
       --bronze        -> stage bronze saja
@@ -215,6 +242,11 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
       --headful       -> tampilkan browser (debug selector)
       --lanjut        -> lanjutkan dari checkpoint
       --test          -> batasi 3 baris per dataset per tahun, tetap simpan ke parquet
+      --backfill      -> mode backfill historis (abaikan validasi tanggal checkpoint)
+      --harian        -> jalankan grup sumber harian
+      --bulanan       -> jalankan grup sumber bulanan
+      --tahunan       -> jalankan grup sumber tahunan
+      --schedule <freq> -> jalankan grup sumber (harian|bulanan|tahunan)
 
     Tanpa flag yang dikenali, `sisa` dikembalikan utuh dan stages=None sehingga
     jalur typer serta pintasan lama (positional) tidak berubah.
@@ -228,11 +260,14 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
         return opsi
 
     terpilih: list[str] = []
-    for arg in args:
+    i = 0
+    while i < len(args):
+        arg = args[i]
         kunci = arg.strip().lower()
         tahap = _STAGE_FLAG.get(kunci)
         if tahap is not None:
             terpilih.extend(tahap)
+            i += 1
             continue
         sumber = _SUMBER_FLAG.get(kunci)
         if sumber is not None:
@@ -243,12 +278,39 @@ def _urai_flag(args: list[str]) -> OpsiCLI:
                 )
                 raise SystemExit(1)
             opsi.sumber = sumber
+            i += 1
             continue
         uji = _UJI_FLAG.get(kunci)
         if uji is not None:
             setattr(opsi, uji, True)
+            i += 1
+            continue
+        # Handle --schedule <value>
+        if kunci == "--schedule":
+            if i + 1 >= len(args):
+                sys.stderr.write("ERROR: --schedule butuh nilai (harian|bulanan|tahunan)\n")
+                raise SystemExit(1)
+            val = args[i + 1].strip().lower()
+            if val not in ("harian", "bulanan", "tahunan"):
+                sys.stderr.write(f"ERROR: schedule tidak dikenal: {val}. Gunakan harian|bulanan|tahunan\n")
+                raise SystemExit(1)
+            opsi.schedule = val
+            i += 2
+            continue
+        # Handle --harian, --bulanan, --tahunan
+        schedule_val = _SCHEDULE_FLAG.get(kunci)
+        if schedule_val is not None:
+            if opsi.schedule is not None and opsi.schedule != schedule_val:
+                sys.stderr.write(
+                    f"ERROR: dua schedule sekaligus (--{opsi.schedule} dan --{schedule_val}). "
+                    f"Pilih satu.\n"
+                )
+                raise SystemExit(1)
+            opsi.schedule = schedule_val
+            i += 1
             continue
         opsi.sisa.append(arg)
+        i += 1
 
     if terpilih:
         opsi.stages = tuple(s for s in STAGES if s in terpilih)
@@ -321,6 +383,7 @@ def _run_sources(
     force_login: bool = False,
     headless_login: bool = False,
     keep_browser_open: bool = False,
+    backfill: bool = False,
 ) -> None:
     """Jalankan sumber enabled per stage secara serial.
 
@@ -364,6 +427,9 @@ def _run_sources(
         catatan.append("  (headless: login tanpa UI)")
     if keep_browser_open:
         catatan.append("  (keep-browser-open: browser dijaga terbuka)")
+    if backfill:
+        catatan.append("  (backfill: mode historis, abaikan validasi tanggal checkpoint)")
+    set_backfill(backfill)
     if tampilan is not None:
         pasang_tampilan_log(tampilan)
         for baris in catatan:
@@ -379,7 +445,7 @@ def _run_sources(
                 tampilan.muat(sumber, stage, "jalan", None, None)
             start = time.time()
             try:
-                result = run_stage(sumber, stage, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
+                result = run_stage(sumber, stage, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open, backfill=backfill)
                 status = "ok"
                 info = f"{sum(len(v) for v in result.values())} baris"
                 if is_check():
@@ -423,15 +489,19 @@ def run_all(
     force_login: bool = False,
     headless_login: bool = False,
     keep_browser_open: bool = False,
+    backfill: bool = False,
+    pilihan: Optional[list[str]] = None,
 ) -> None:
     """Jalankan seluruh sumber enabled secara paralel (default 4 worker).
 
     stages=None -> extract -> transform -> load; mis. ('extract',) utk --bronze.
     dry_run=True  -> jalankan tanpa menulis file/DB.
+    pilihan=None -> seluruh sumber enabled; pilihan=[...] -> hanya sumber tsb.
     """
+    set_backfill(backfill)
     setup_logging()
     stages = stages or STAGES
-    sumber_aktif, skips = _piih_sumber(None)
+    sumber_aktif, skips = _piih_sumber(pilihan)
     workers = int(os.environ.get("HOTEL_WORKERS", str(WORKERS_DEFAULT)))
     per = jalankan_paralel(
         sumber_aktif,
@@ -450,6 +520,7 @@ def run_single(
     force_login: bool = False,
     headless_login: bool = False,
     keep_browser_open: bool = False,
+    backfill: bool = False,
 ) -> None:
     """Jalankan satu sumber (extract -> transform -> load)."""
     if HAS_TYPER:
@@ -466,7 +537,7 @@ def run_single(
             fg=colors.RED,
         )
         raise SystemExit(1)
-    _run_sources([source], stages, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open)
+    _run_sources([source], stages, dry_run=dry_run, force_login=force_login, headless_login=headless_login, keep_browser_open=keep_browser_open, backfill=backfill)
 
 
 def _jalankan_pintasan(opsi: OpsiCLI) -> None:
@@ -474,8 +545,26 @@ def _jalankan_pintasan(opsi: OpsiCLI) -> None:
     set_dry_run(opsi.dry_run)
     set_headful(opsi.headful)
     set_resume(opsi.resume)
+    set_backfill(opsi.backfill)
     if opsi.test:
         set_test()
+
+    # Handle schedule grouping
+    if opsi.schedule is not None:
+        pilihan = get_sources_by_schedule(opsi.schedule)
+        if not pilihan:
+            sys.stderr.write(f"ERROR: tidak ada sumber enabled dengan schedule '{opsi.schedule}'\n")
+            raise SystemExit(1)
+        if not opsi.sisa:
+            if opsi.sumber is None:
+                if not opsi.test:
+                    set_row_limit(None)
+                run_all(opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill, pilihan=pilihan)
+            else:
+                # schedule + explicit source flag (should not happen due to validation, but handle anyway)
+                run_single(opsi.sumber, opsi.stages, dry_run=opsi.dry_run, force_login=opsi.force_login, headless_login=opsi.headless_login, keep_browser_open=opsi.keep_browser_open, backfill=opsi.backfill)
+            return
+
     if not opsi.sisa:
         if opsi.sumber is None:
             if not opsi.test:

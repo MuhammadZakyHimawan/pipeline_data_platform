@@ -19,6 +19,7 @@ defaults:
 sources:
   bps:
     enabled: true
+    schedule: bulanan
     period: latest
     grain: year
     # start_year per dataset: tahun pertama yang ditarik; tahun tanpa data
@@ -51,6 +52,7 @@ sources:
 
   gdelt:
     enabled: true
+    schedule: harian
     period: latest
     grain: year
     # GDELT DOC API hanya mencakup ~2018 ke belakang.
@@ -58,11 +60,13 @@ sources:
 
   cuaca:
     enabled: true
+    schedule: harian
     period: latest
     grain: year
 
   trends:
     enabled: true
+    schedule: harian
     period: latest
     grain: year
     playwright_required: true
@@ -146,6 +150,7 @@ sources:
 
   gmaps:
     enabled: true
+    schedule: harian
     headless: false
     grain: year
     playwright_required: true
@@ -170,6 +175,7 @@ sources:
 
   traveloka_review:
     enabled: true
+    schedule: bulanan
     grain: month
     hotel_master_schema: "public"
     hotel_master_table: "hotel_master"
@@ -179,12 +185,14 @@ sources:
 
   transport:
     enabled: true
+    schedule: bulanan
     period: latest
     grain: snapshot
     playwright_required: true
 
   poi:
     enabled: true
+    schedule: bulanan
     period: latest
     grain: snapshot
     # query diproses serial (1) agar tidak menumbuk mirror Overpass publik;
@@ -193,15 +201,18 @@ sources:
 
   hari_libur:
     enabled: true
+    schedule: tahunan
     period: latest
     grain: year
 
   kurs:
     enabled: true
+    schedule: harian
     period: latest
     grain: year
 
   event:
     enabled: true
+    schedule: harian
     period: latest
     grain: year

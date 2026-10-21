@@ -73,6 +73,21 @@ class ConsoleFormatter(logging.Formatter):
         return f"{msg} [detail: {hint}]"
 
 
+class FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler yang auto-flush setelah setiap emit.
+
+    Memastikan log WARNING/ERROR dari thread worker langsung tampil di terminal
+    tanpa tertunda buffer.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 class StageSourceHandler(logging.Handler):
     """Tulis record ke file per stage & per sumber berdasarkan nama logger."""
 
@@ -112,7 +127,7 @@ def setup_logging(
 
     fmt = logging.Formatter(FORMAT, datefmt=DATE_FORMAT)
 
-    console = logging.StreamHandler(sys.stdout)
+    console = FlushingStreamHandler(sys.stdout)
     console.setLevel(console_level)
     console.setFormatter(ConsoleFormatter(_CONSOLE_FORMAT, datefmt=_CONSOLE_DATE_FORMAT))
     root.addHandler(console)

@@ -14,6 +14,8 @@ import requests
 from ..shared.config import get_source_config
 from ..shared.row_limit import truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.checkpoint import Checkpoint
+from ..shared.run_options import get_backfill
 
 log = logging.getLogger(__name__)
 
@@ -190,7 +192,7 @@ def _ambil_satu_hari(target: date, max_window: int) -> list[dict[str, Any]]:
     return rows
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): GDELT 2.0 per window, hanya event lokasi Indonesia.
 
     Bronze ditulis **satu file per tahun**: {berita}/{YYYY}.parquet, mode append
@@ -203,6 +205,17 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
     cfg = get_source_config(SOURCE)
     max_window = int(cfg.get("max_window", MAKS_WINDOW))
     targets = _sasar_hari(period)
+
+    # Checkpoint per tanggal (key: YYYY-MM-DD)
+    checkpoint = Checkpoint(SOURCE, backfill=backfill)
+    if get_backfill() or backfill:
+        sudah = checkpoint.muat()
+        targets = [d for d in targets if not checkpoint.sudah(d.isoformat())]
+        log.info("gdelt: resume dari checkpoint, %d hari tersisa", len(targets))
+
+    if dry_run:
+        log.info("[dry-run] gdelt bronze: %d hari akan diproses (tidak di-download)", len(targets))
+        return {"berita": pd.DataFrame()}
 
     if len(targets) > 1:
         log.warning(
@@ -223,6 +236,10 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
             continue
         log.info("gdelt %s: %d event Indonesia", target, len(rows))
         semua_rows.extend(rows)
+        
+        # Tandai checkpoint setelah hari selesai diproses
+        checkpoint.tandai(target.isoformat())
+        checkpoint.simpan()
 
     if not semua_rows:
         log.warning("gdelt: tidak ada data untuk ditulis")

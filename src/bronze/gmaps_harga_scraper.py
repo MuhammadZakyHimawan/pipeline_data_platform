@@ -133,7 +133,7 @@ def _navigate_to_dates(page, search_query: str, checkin: date, checkout: date,
                 pass
         return True
     except Exception as exc:
-        log.debug("[DEBUG] navigate_to_dates gagal: %s", exc)
+        log.debug("[%s] %s - %s: navigate_to_dates gagal: %s", nama_hotel, checkin.isoformat(), checkout.isoformat(), exc)
         return False
     time.sleep(0.3)
     if not _pastikan_bulan_terlihat(page, checkin):
@@ -160,7 +160,7 @@ def _navigate_to_dates(page, search_query: str, checkin: date, checkout: date,
 
 
 def open_hotel_search(page, search_query: str, checkin: date, checkout: date,
-                      cfg: dict | None = None) -> bool:
+                      cfg: dict | None = None, nama_hotel: str | None = None) -> bool:
     """Buka Google Travel untuk satu skenario tanggal.
 
     Timeout `goto` dua tingkat dari config: percobaan pertama `goto_timeout_ms`
@@ -177,8 +177,8 @@ def open_hotel_search(page, search_query: str, checkin: date, checkout: date,
         try:
             page.goto(url, timeout=batas_ms)
         except Exception as exc:
-            log.debug("[DEBUG] goto %s gagal (timeout %dms): %s",
-                      type(exc).__name__, batas_ms, exc)
+            prefix = f"[{nama_hotel}] {checkin.isoformat()} - {checkout.isoformat()}" if nama_hotel else f"[unknown] {checkin.isoformat()} - {checkout.isoformat()}"
+            log.debug("%s: goto gagal (timeout %dms): %s", prefix, batas_ms, exc)
             continue
         try:
             page.wait_for_load_state("domcontentloaded", timeout=tunggu_ms)
@@ -189,7 +189,7 @@ def open_hotel_search(page, search_query: str, checkin: date, checkout: date,
         bypass_cookie(page)
         if f"ts={ts_val}" in page.url:
             return True
-    log.info("[DEBUG] ts= hilang; tidak ada fallback kalender")
+    log.info("[%s] %s - %s: ts= hilang; tidak ada fallback kalender", nama_hotel, checkin.isoformat(), checkout.isoformat())
     return False
 
 
@@ -538,7 +538,7 @@ def _klik_opsi_lainnya(page) -> bool:
     return False
 
 
-def extract_ota_prices(page, nama_hotel: str, cfg: dict | None = None) -> list[dict]:
+def extract_ota_prices(page, nama_hotel: str, cfg: dict | None = None, checkin: date | None = None, checkout: date | None = None) -> list[dict]:
     """Baca semua harga OTA pada halaman detail hotel saat ini."""
     hasil_gabungan: dict[str, int] = {}
 
@@ -550,8 +550,13 @@ def extract_ota_prices(page, nama_hotel: str, cfg: dict | None = None) -> list[d
                 continue
             hasil_gabungan[ota] = min(hasil_gabungan.get(ota, h), h)
 
+    def _log_prefix() -> str:
+        ci = checkin.isoformat() if checkin else "unknown"
+        co = checkout.isoformat() if checkout else "unknown"
+        return f"[{nama_hotel}] {ci} - {co}"
+
     if not _tunggu_hasil_hotel(page, timeout_dari_cfg(cfg, "wait_load_ms", 2000)):
-        log.debug("[DEBUG] hasil hotel tidak muncul; anggap detail terbuka.")
+        log.debug("%s: hasil hotel tidak muncul; anggap detail terbuka.", _log_prefix())
         _scroll_di_detail(page)
         _klik_opsi_lainnya(page)
         pasangan = _ekstrak_ota_all_options(page, nama_hotel)
@@ -631,9 +636,9 @@ def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
         # ========== FIRST LEAD TIME: full page load via ts= URL ==========
         checkin, checkout = first_sk["checkin"], first_sk["checkout"]
         try:
-            if open_hotel_search(page, search_query, checkin, checkout, cfg):
+            if open_hotel_search(page, search_query, checkin, checkout, cfg, nama):
                 # Click hotel card & Harga tab ONCE
-                harga_list = extract_ota_prices(page, nama, cfg)
+                harga_list = extract_ota_prices(page, nama, cfg, checkin, checkout)
                 for item in harga_list or []:
                     harga = int(item.get("harga") or 0)
                     sumber = str(item.get("sumber") or "").strip()
@@ -648,7 +653,7 @@ def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
                             "scrape_date": today,
                         })
         except Exception as exc:
-            log.warning("  [%s] H-%s gagal (first): %s", nama[:40], first_sk["lead_time"], exc)
+            log.warning("[%s] %s - %s: H-%s gagal (first): %s", nama, checkin.isoformat(), checkout.isoformat(), first_sk["lead_time"], exc)
 
         # ========== REMAINING LEAD TIMES: calendar picker (no reload) ==========
         for sk in skenario[1:]:
@@ -660,7 +665,7 @@ def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
             try:
                 # Navigate to new dates via URL, then re-click hotel card & Harga tab
                 if _navigate_to_dates(page, search_query, checkin, checkout, cfg, nama):
-                    harga_list = extract_ota_prices(page, nama, cfg)
+                    harga_list = extract_ota_prices(page, nama, cfg, checkin, checkout)
                     for item in harga_list or []:
                         harga = int(item.get("harga") or 0)
                         sumber = str(item.get("sumber") or "").strip()
@@ -675,9 +680,9 @@ def scrape_hotel_prices(context, hotel: dict, cfg: dict) -> list[dict]:
                                 "scrape_date": today,
                             })
                 else:
-                    log.warning("  [%s] H-%s: navigasi URL gagal", nama[:40], sk["lead_time"])
+                    log.warning("[%s] %s - %s: H-%s: navigasi URL gagal", nama, checkin.isoformat(), checkout.isoformat(), sk["lead_time"])
             except Exception as exc:
-                log.warning("  [%s] H-%s gagal: %s", nama[:40], sk["lead_time"], exc)
+                log.warning("[%s] %s - %s: H-%s gagal: %s", nama, checkin.isoformat(), checkout.isoformat(), sk["lead_time"], exc)
     finally:
         try:
             page.close()

@@ -8,6 +8,7 @@ from __future__ import annotations
 _dry_run: bool = False
 _headful: bool = False
 _resume: bool = False
+_backfill: bool = False
 
 
 def set_dry_run(nilai: bool) -> None:
@@ -38,3 +39,13 @@ def set_resume(nilai: bool) -> None:
 
 def get_resume() -> bool:
     return _resume
+
+
+def set_backfill(nilai: bool) -> None:
+    """Aktifkan mode backfill historis (abaikan validasi tanggal checkpoint)."""
+    global _backfill
+    _backfill = bool(nilai)
+
+
+def get_backfill() -> bool:
+    return _backfill

@@ -83,7 +83,8 @@ def run_stage(
     dry_run: bool = False,
     force_login: bool = False,
     headless_login: bool = False,
-    keep_browser_open: bool = False
+    keep_browser_open: bool = False,
+    backfill: bool = False
 ) -> dict:
     """Jalankan tahap bronze (extract) untuk satu sumber."""
     if source not in _PIPES:
@@ -115,6 +116,8 @@ def run_stage(
         kwargs["headless_login"] = headless_login
     if "keep_browser_open" in sig.parameters:
         kwargs["keep_browser_open"] = keep_browser_open
+    if "backfill" in sig.parameters:
+        kwargs["backfill"] = backfill
     result = module.extract(**kwargs)
     elapsed = time.time() - start
     log.info("=== %s.%s selesai (%.1f dtk, %d dataset) ===", source, stage, elapsed, len(result))
@@ -126,10 +129,11 @@ def run_pipeline(
     period: str | None = None, 
     dry_run: bool = False,
     force_login: bool = False,
-    headless_login: bool = False
+    headless_login: bool = False,
+    backfill: bool = False
 ) -> dict[str, dict]:
     """Jalankan pipeline bronze (extract) untuk satu sumber."""
     summary: dict[str, dict] = {}
-    result = run_stage(source, "bronze", period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login)
+    result = run_stage(source, "bronze", period=period, dry_run=dry_run, force_login=force_login, headless_login=headless_login, backfill=backfill)
     summary["bronze"] = {k: len(v) for k, v in result.items()}
     return summary

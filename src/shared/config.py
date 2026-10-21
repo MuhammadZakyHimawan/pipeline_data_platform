@@ -90,3 +90,12 @@ def get_start_year(source: str, default: int = 2014) -> int:
         return int(get_source_config(source).get("start_year", default))
     except (TypeError, ValueError):
         return default
+
+
+def get_sources_by_schedule(schedule: str) -> list[str]:
+    """Kembalikan list nama sumber yang memiliki schedule tertentu dan enabled: true."""
+    cfg = load_sources()
+    return [
+        name for name, src in cfg.get("sources", {}).items()
+        if src.get("schedule") == schedule and src.get("enabled", True)
+    ]

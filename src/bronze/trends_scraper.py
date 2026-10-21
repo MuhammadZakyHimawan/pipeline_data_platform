@@ -13,6 +13,8 @@ from playwright.sync_api import sync_playwright
 from ..shared.config import get_source_config
 from ..shared.row_limit import get_row_limit, truncate_df
 from ..shared.storage import write_parquet_by_year
+from ..shared.checkpoint import Checkpoint
+from ..shared.run_options import get_backfill
 
 log = logging.getLogger(__name__)
 
@@ -207,7 +209,7 @@ def _scrap_tren(page, nama_destinasi: str, geo: str, rentang: str) -> list[dict]
         page.remove_listener("response", handler)
 
 
-def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.DataFrame]:
+def extract(period: str | None = None, dry_run: bool = False, backfill: bool = False) -> dict[str, pd.DataFrame]:
     """EXTRACT (bronze): interest-over-time Google Trends per destinasi dari config.
 
     Bronze ditulis per tahun (grain: year): {dataset}/{YYYY}.parquet.
@@ -223,8 +225,19 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
         log.warning("trends: tidak ada daftar_destinasi di config/sources.yaml")
         return {}
 
+    # Checkpoint per destinasi (composite key: nama|geo)
+    checkpoint = Checkpoint(SOURCE, backfill=backfill)
+    if get_backfill() or backfill:
+        sudah = checkpoint.muat()
+        destinasi = [(n, k) for n, k in destinasi if not checkpoint.sudah(f"{n}|{geo}")]
+        log.info("trends: resume dari checkpoint, %d destinasi tersisa", len(destinasi))
+
     log.info("trends: %d destinasi, rentang=%s geo=%s headless=%s",
              len(destinasi), rentang, geo, headless)
+
+    if dry_run:
+        log.info("[dry-run] trends bronze: %d destinasi (tidak di-scrape)", len(destinasi))
+        return {"search_intent": pd.DataFrame(columns=KOLOM_BRONZE)}
 
     semua: list[dict] = []
     limit = get_row_limit()
@@ -263,6 +276,11 @@ def extract(period: str | None = None, dry_run: bool = False) -> dict[str, pd.Da
                         "geo": geo,
                     })
                 log.info("trends %s -> %d titik", nama, len(titik))
+                
+                # Tandai checkpoint setelah destinasi selesai
+                checkpoint.tandai(f"{nama}|{geo}")
+                checkpoint.simpan()
+
                 if limit and len(semua) >= limit:
                     log.info("trends: cap %d baris tercapai; destinasi tersisa dilewati", limit)
                     break
